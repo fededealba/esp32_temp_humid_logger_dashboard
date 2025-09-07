@@ -11,11 +11,14 @@ Overview
 Quick Start
 -----------
 
+0) Activate your Conda environment
+
+- conda activate py312
+
 1) Start the Flask server
 
-- Create a venv and install deps:
+- Install deps into your active conda env:
   - cd server
-  - python -m venv .venv && source .venv/bin/activate
   - pip install -r requirements.txt
 - Optional: set API key
   - export INGEST_API_KEY="your-key"
@@ -30,17 +33,23 @@ Quick Start
   - http://<your-lan-ip>:5001/data
 - Build/flash via Arduino IDE or PlatformIO.
 
-3) Run the dashboard
+3) Run the dashboard (option A)
 
-- Create a venv and install deps:
+- Install deps into your active conda env:
   - cd dashboard
-  - python -m venv .venv && source .venv/bin/activate
   - pip install -r requirements.txt
 - Point to the server URL (optional, defaults to http://localhost:5001):
   - export API_BASE_URL="http://<your-lan-ip>:5001"
   - If server uses key: export DASHBOARD_API_KEY="your-key"
 - Start Streamlit:
   - streamlit run app.py
+
+4) Or start both with one command (option B)
+
+- From repo root, with conda env active and both deps installed (server + dashboard):
+  - pip install -r server/requirements.txt -r dashboard/requirements.txt
+  - python scripts/start_all.py [--ingest-api-key your-key]
+  - The script uses the current Python interpreter (your conda env) for both server and dashboard.
 
 Dashboard Features
 ------------------

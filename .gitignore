@@ -1,0 +1,8 @@
+# Ignore local secrets
+secrets.h
+firmware/**/secrets.h
+
+# Local Flask instance data
+server/instance/
+*/__pycache__/
+.DS_Store

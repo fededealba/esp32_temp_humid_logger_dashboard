@@ -4,8 +4,10 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import requests
-from datetime import datetime, timedelta, date, time as dtime
+from datetime import datetime, timedelta, date, time as dtime, timezone
 import time
+from zoneinfo import ZoneInfo
+from pandas.api.types import is_datetime64tz_dtype
 
 # Set page config
 st.set_page_config(
@@ -30,6 +32,28 @@ def _api_headers():
     if api_key:
         headers["X-Api-Key"] = api_key
     return headers
+
+
+def _local_timezone():
+    tz_name = os.environ.get("DASHBOARD_TIMEZONE")
+    if tz_name:
+        try:
+            return ZoneInfo(tz_name)
+        except Exception:
+            st.warning(f"Invalid DASHBOARD_TIMEZONE '{tz_name}', falling back to system timezone")
+    try:
+        tz = datetime.now().astimezone().tzinfo
+        return tz or timezone.utc
+    except Exception:
+        return timezone.utc
+
+
+def _to_utc(dt: datetime | None, local_tz) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=local_tz)
+    return dt.astimezone(timezone.utc)
 
 
 @st.cache_data(ttl=10)
@@ -69,10 +93,22 @@ def load_data(max_rows: int = 2000, device_id: str | None = None, start: datetim
         df = pd.DataFrame(rows)
         # Parse timestamps and create unified 'ts'
         if 'received_at' in df.columns:
-            df['received_at'] = pd.to_datetime(df['received_at'], errors='coerce')
+            df['received_at'] = pd.to_datetime(df['received_at'], errors='coerce', utc=True)
         if 'device_timestamp' in df.columns:
-            df['device_timestamp'] = pd.to_datetime(df['device_timestamp'], errors='coerce')
+            df['device_timestamp'] = pd.to_datetime(df['device_timestamp'], errors='coerce', utc=True)
         df['ts'] = df['device_timestamp'].where(df.get('device_timestamp').notna(), df.get('received_at'))
+        local_tz = _local_timezone()
+        if 'ts' in df.columns:
+            if is_datetime64tz_dtype(df['ts']):
+                df['ts'] = df['ts'].dt.tz_convert('UTC')
+            else:
+                df['ts'] = df['ts'].dt.tz_localize('UTC')
+            if local_tz:
+                try:
+                    df['display_ts'] = df['ts'].dt.tz_convert(local_tz)
+                except Exception:
+                    df['display_ts'] = df['ts']
+            df['ts_utc'] = df['ts']
         return df.sort_values(by='id', ascending=False).reset_index(drop=True)
     except Exception as e:
         st.error(f"Error loading data from API: {e}")
@@ -120,6 +156,10 @@ def server_health():
 st.sidebar.title("Settings")
 st.sidebar.write(f"API: {_api_base_url()}")
 
+local_tz = _local_timezone()
+tz_label = getattr(local_tz, 'key', str(local_tz)) if local_tz else 'UTC'
+st.sidebar.write(f"Timezone: {tz_label}")
+
 # Status and refresh
 health_ok = server_health()
 st.sidebar.write("Server:", "✅ Online" if health_ok else "❌ Offline")
@@ -158,7 +198,10 @@ elif time_preset != "All Data":
 use_f = st.sidebar.toggle("Show Fahrenheit", value=False)
 
 # Load the data with filters
-df = load_data(max_rows=max_rows, device_id=device_id, start=start_dt, end=end_dt)
+start_utc = _to_utc(start_dt, local_tz) if start_dt else None
+end_utc = _to_utc(end_dt, local_tz) if end_dt else None
+
+df = load_data(max_rows=max_rows, device_id=device_id, start=start_utc, end=end_utc)
 
 # Check if data is available
 if df.empty:
@@ -242,17 +285,19 @@ else:
         
         # Data is already filtered by API for presets; for custom filters apply local filter too
         filtered_df = df
-        if start_dt is not None and 'ts' in df.columns:
-            filtered_df = filtered_df[filtered_df['ts'] >= start_dt]
-        if end_dt is not None and 'ts' in df.columns:
-            filtered_df = filtered_df[filtered_df['ts'] <= end_dt]
+        if start_utc is not None and 'ts_utc' in df.columns:
+            filtered_df = filtered_df[filtered_df['ts_utc'] >= start_utc]
+        if end_utc is not None and 'ts_utc' in df.columns:
+            filtered_df = filtered_df[filtered_df['ts_utc'] <= end_utc]
             
         # Check if filtered data is available
         if filtered_df.empty:
             st.warning(f"No data available for {time_preset}.")
         else:
             # Combined dual-axis chart
-            x_col = 'ts' if 'ts' in filtered_df.columns else ('received_at' if 'received_at' in filtered_df.columns else None)
+            x_col = 'display_ts' if 'display_ts' in filtered_df.columns else (
+                'ts_utc' if 'ts_utc' in filtered_df.columns else (
+                    'received_at' if 'received_at' in filtered_df.columns else None))
             if x_col is None:
                 st.warning("No time column available to plot.")
             else:
@@ -293,7 +338,12 @@ else:
         st.metric("Avg Humidity", f"{df['humidity'].mean():.1f}%")
 
     with col_stats4:
-        since = df['received_at'].min()
+        if 'display_ts' in df.columns:
+            since = df['display_ts'].min()
+        elif 'ts_utc' in df.columns:
+            since = df['ts_utc'].min().tz_convert(local_tz) if local_tz else df['ts_utc'].min()
+        else:
+            since = df['received_at'].min() if 'received_at' in df.columns else None
         st.metric("Data Since", since.strftime('%Y-%m-%d') if pd.notna(since) else 'N/A')
     
     # Raw data table with expand/collapse
@@ -312,5 +362,5 @@ else:
 
 if auto_refresh:
     st.sidebar.write(f"Dashboard will refresh every {refresh_interval} seconds")
-    time.sleep(1)  # Small delay
+    time.sleep(refresh_interval)
     st.rerun()

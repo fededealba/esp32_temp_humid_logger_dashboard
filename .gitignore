@@ -4,5 +4,6 @@ firmware/**/secrets.h
 
 # Local Flask instance data
 server/instance/
+instance/
 */__pycache__/
 .DS_Store

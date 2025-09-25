@@ -22,7 +22,7 @@ const char* API_KEY = nullptr;  // optional API key header
 #endif
 
 // Flask server IP (Laptop IP) + port
-const char* SERVER_URL = "http://192.168.1.166:5001/data";  // Replace with your laptop's local IP/host
+const char* SERVER_URL = "http://192.168.1.163:5001/data";  // Replace with your laptop's local IP/host
 
 // Device metadata
 const char* DEVICE_NAME = "esp32-dht22";
@@ -123,6 +123,8 @@ void loop() {
     Serial.print(" °C  |  Humidity: "); Serial.print(humidity);
     Serial.print(" %  |  Time: "); Serial.print(formattedTime);
     Serial.print(" | ISO: "); Serial.println(timestampIso);
+    Serial.print("Server URL: "); Serial.println(SERVER_URL);
+    Serial.print("Device IP: "); Serial.println(WiFi.localIP());
 
     // Send HTTP POST
     if (WiFi.status() == WL_CONNECTED) {
@@ -285,27 +287,32 @@ void onWiFiEvent(WiFiEvent_t event) {
   switch (event) {
 #if defined(ARDUINO_EVENT_WIFI_STA_DISCONNECTED)
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-      Serial.println("WiFi event: disconnected");
-      break;
-    case ARDUINO_EVENT_WIFI_STA_CONNECTED:
-      Serial.println("WiFi event: connected");
-      break;
-    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-      Serial.print("WiFi event: got IP ");
-      Serial.println(WiFi.localIP());
-      break;
-#else
+#elif defined(WIFI_EVENT_STA_DISCONNECTED)
+    case WIFI_EVENT_STA_DISCONNECTED:
+#elif defined(SYSTEM_EVENT_STA_DISCONNECTED)
     case SYSTEM_EVENT_STA_DISCONNECTED:
+#endif
       Serial.println("WiFi event: disconnected");
       break;
+#if defined(ARDUINO_EVENT_WIFI_STA_CONNECTED)
+    case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+#elif defined(WIFI_EVENT_STA_CONNECTED)
+    case WIFI_EVENT_STA_CONNECTED:
+#elif defined(SYSTEM_EVENT_STA_CONNECTED)
     case SYSTEM_EVENT_STA_CONNECTED:
+#endif
       Serial.println("WiFi event: connected");
       break;
+#if defined(ARDUINO_EVENT_WIFI_STA_GOT_IP)
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+#elif defined(IP_EVENT_STA_GOT_IP)
+    case IP_EVENT_STA_GOT_IP:
+#elif defined(SYSTEM_EVENT_STA_GOT_IP)
     case SYSTEM_EVENT_STA_GOT_IP:
+#endif
       Serial.print("WiFi event: got IP ");
       Serial.println(WiFi.localIP());
       break;
-#endif
     default:
       break;
   }

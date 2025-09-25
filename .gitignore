@@ -1,6 +1,7 @@
 # Ignore local secrets
 secrets.h
 firmware/**/secrets.h
+firmware/temp_hum_complete/secrets.h
 
 # Local Flask instance data
 server/instance/

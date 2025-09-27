@@ -1,4 +1,4 @@
-# Git files
+# Git
 .git/
 .gitignore
 
@@ -27,7 +27,6 @@ coverage.xml
 .env.local
 .env.*.local
 instance/
-.webassets-cache
 
 # IDE
 .vscode/
@@ -38,15 +37,12 @@ instance/
 
 # OS
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
 Thumbs.db
 
-# Project specific
+# Project specific - exclude from Docker build
 dashboard/
 firmware/
 *.md
 .claude/
+fly.toml
+railway.json

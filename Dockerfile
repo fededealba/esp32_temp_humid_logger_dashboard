@@ -11,4 +11,4 @@ COPY server/ ./server/
 
 # Change to server directory and run gunicorn
 WORKDIR /app/server
-CMD gunicorn app:app --bind 0.0.0.0:${PORT:-5001}
+CMD gunicorn app:app --bind 0.0.0.0:${PORT:-8080}

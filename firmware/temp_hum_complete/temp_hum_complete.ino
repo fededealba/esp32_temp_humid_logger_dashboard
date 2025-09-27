@@ -22,8 +22,8 @@ const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 const char* API_KEY = nullptr;  // optional API key header
 #endif
 
-// Google Cloud Run server URL (HTTPS)
-const char* SERVER_URL = "https://esp32-weather-api-rfzelnqpha-uc.a.run.app/data";
+// Google Forms submission URL (HTTPS)
+const char* SERVER_URL = "https://docs.google.com/forms/d/e/1FAIpQLSdaHQuuWAcFIjU44oZUqOMrtZhC9smcMoF9IOquQO8FFVwU5Q/formResponse";
 
 // Device metadata
 const char* DEVICE_NAME = "esp32-dht22";
@@ -134,18 +134,14 @@ void loop() {
       client.setInsecure(); // For development - in production, use proper certificate validation
       http.begin(client, SERVER_URL);
       http.setTimeout(HTTP_TIMEOUT_MS);
-      http.addHeader("Content-Type", "application/json");
-      http.addHeader("Accept", "application/json");
+      http.addHeader("Content-Type", "application/x-www-form-urlencoded");
       http.addHeader("User-Agent", "esp32-dht22-client/1.1");
       http.addHeader("Connection", "close");
-      if (API_KEY && strlen(API_KEY) > 0) {
-        http.addHeader("X-Api-Key", API_KEY);
-      }
 
-      // Build JSON payload (backward compatible 'time', plus ISO + epoch + device)
-      String jsonData = buildJsonPayload(humidity, temperature, epoch);
+      // Build form-encoded payload for Google Forms
+      String formData = buildFormPayload(humidity, temperature, epoch);
 
-      int httpResponseCode = http.POST(jsonData);
+      int httpResponseCode = http.POST(formData);
       Serial.print("HTTP Response: ");
       Serial.println(httpResponseCode);
       if (httpResponseCode <= 0) {
@@ -276,6 +272,21 @@ String buildJsonPayload(float humidity, float temperature, unsigned long epoch) 
         " \"epoch\": " + String(epoch) +
         "}";
 #endif
+  return out;
+}
+
+String buildFormPayload(float humidity, float temperature, unsigned long epoch) {
+  // Google Forms field IDs:
+  // Temperature: entry.2135755099
+  // Humidity: entry.346799127
+  // Device ID: entry.1396898277
+  // Timestamp: entry.1586851294
+  String out;
+  out.reserve(200);
+  out = String("entry.2135755099=") + String(temperature, 2) +
+        "&entry.346799127=" + String(humidity, 2) +
+        "&entry.1396898277=" + WiFi.macAddress() +
+        "&entry.1586851294=" + iso8601UTC(epoch);
   return out;
 }
 

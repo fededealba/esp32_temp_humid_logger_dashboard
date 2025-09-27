@@ -3,7 +3,11 @@ secrets.h
 firmware/**/secrets.h
 firmware/temp_hum_complete/secrets.h
 
-# Local Flask instance data
+# Google Sheets API credentials
+dashboard/credentials.json
+credentials.json
+
+# Local Flask instance data (deprecated)
 server/instance/
 instance/
 */__pycache__/

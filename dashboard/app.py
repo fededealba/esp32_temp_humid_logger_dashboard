@@ -22,8 +22,8 @@ st.markdown("Real-time temperature and humidity monitoring from ESP32 sensor dat
 
 # Function to load data from SQLite database
 def _api_base_url():
-    """Resolve API base URL from env or default Railway."""
-    return os.environ.get("API_BASE_URL", "https://esp32temphumidloggerdashboard-production.up.railway.app")
+    """Resolve API base URL from env or default Google Cloud Run."""
+    return os.environ.get("API_BASE_URL", "https://esp32-weather-api-rfzelnqpha-uc.a.run.app")
 
 
 def _api_headers():

@@ -22,8 +22,8 @@ const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 const char* API_KEY = nullptr;  // optional API key header
 #endif
 
-// Railway server URL (HTTPS) - update this after Railway deployment
-const char* SERVER_URL = "https://esp32temphumidloggerdashboard-production.up.railway.app/data";
+// Google Cloud Run server URL (HTTPS)
+const char* SERVER_URL = "https://esp32-weather-api-rfzelnqpha-uc.a.run.app/data";
 
 // Device metadata
 const char* DEVICE_NAME = "esp32-dht22";

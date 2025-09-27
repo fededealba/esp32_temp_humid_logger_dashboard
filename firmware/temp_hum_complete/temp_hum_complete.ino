@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <DHT.h>
 #include <time.h>
 #if __has_include(<ArduinoJson.h>)
@@ -21,8 +22,8 @@ const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 const char* API_KEY = nullptr;  // optional API key header
 #endif
 
-// Flask server IP (Laptop IP) + port
-const char* SERVER_URL = "http://192.168.1.163:5001/data";  // Replace with your laptop's local IP/host
+// Railway server URL (HTTPS) - update this after Railway deployment
+const char* SERVER_URL = "https://your-app-name.railway.app/data";  // Replace with your Railway URL
 
 // Device metadata
 const char* DEVICE_NAME = "esp32-dht22";
@@ -126,10 +127,12 @@ void loop() {
     Serial.print("Server URL: "); Serial.println(SERVER_URL);
     Serial.print("Device IP: "); Serial.println(WiFi.localIP());
 
-    // Send HTTP POST
+    // Send HTTPS POST
     if (WiFi.status() == WL_CONNECTED) {
       HTTPClient http;
-      http.begin(SERVER_URL);
+      WiFiClientSecure client;
+      client.setInsecure(); // For development - in production, use proper certificate validation
+      http.begin(client, SERVER_URL);
       http.setTimeout(HTTP_TIMEOUT_MS);
       http.addHeader("Content-Type", "application/json");
       http.addHeader("Accept", "application/json");

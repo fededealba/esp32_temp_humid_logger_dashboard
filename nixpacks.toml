@@ -1,11 +1,11 @@
 [phases.setup]
-nixPkgs = ['python311']
+nixPkgs = ['python311', 'python311Packages.pip']
 
 [phases.install]
-cmds = ['pip install -r server/requirements.txt']
+cmds = ['python -m pip install -r server/requirements.txt']
 
 [phases.build]
 cmds = ['echo "Build complete"']
 
 [start]
-cmd = 'cd server && gunicorn app:app --bind 0.0.0.0:$PORT'
+cmd = 'cd server && python -m gunicorn app:app --bind 0.0.0.0:$PORT'

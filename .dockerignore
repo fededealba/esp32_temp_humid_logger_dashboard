@@ -44,5 +44,4 @@ dashboard/
 firmware/
 *.md
 .claude/
-fly.toml
 railway.json

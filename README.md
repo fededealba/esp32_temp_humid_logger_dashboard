@@ -8,6 +8,8 @@ This branch uses Google Forms and Google Sheets for ingestion and storage.
 
 - `firmware/`: ESP32 Arduino sketch for a DHT22 sensor. It submits
   temperature, humidity, device ID, and timestamp values to a Google Form.
+- Root Next.js app: Vercel-deployable dashboard. It reads the linked Google
+  Sheet through a serverless API route and renders the dashboard in React.
 - `dashboard/`: Streamlit dashboard. It reads the linked Google Sheet with
   Google service account credentials and renders metrics, charts, and raw data.
 - `scripts/start_all.py`: legacy helper for the old Flask API flow. It is not
@@ -21,7 +23,8 @@ Data Flow
 1. The ESP32 reads the DHT22 sensor.
 2. The firmware posts form-encoded readings to Google Forms.
 3. Google Forms appends each response to a linked Google Sheet.
-4. The Streamlit dashboard reads the Google Sheet and displays the data.
+4. The Next.js or Streamlit dashboard reads the Google Sheet and displays the
+   data.
 
 Quick Start
 -----------
@@ -81,7 +84,41 @@ cp dashboard/credentials.example.json dashboard/credentials.json
 Replace the placeholder values, or more commonly replace the copied file with
 the downloaded service account key JSON.
 
-3) Run the dashboard
+3) Run the Vercel dashboard locally
+
+Install Node.js 20.9.0 or newer, then from the repo root:
+
+```sh
+cp .env.example .env.local
+npm install
+npm run dev
+```
+
+For local development, the Next.js API can also read the ignored
+`dashboard/credentials.json` file directly, so you do not need to paste
+`GOOGLE_CREDENTIALS_JSON` into `.env.local` if that file exists. If you do use
+`GOOGLE_CREDENTIALS_JSON`, uncomment it in `.env.local` and replace the
+placeholder with the full service account key JSON.
+
+Open <http://localhost:3000>.
+
+4) Deploy the Vercel dashboard
+
+Create a Vercel project from this repository. Set these environment variables
+in the Vercel project settings:
+
+- `GOOGLE_SHEETS_ID`: the linked response spreadsheet ID.
+- `GOOGLE_CREDENTIALS_JSON`: the full service account key JSON.
+- `GOOGLE_CLIENT_EMAIL` and `GOOGLE_PRIVATE_KEY`: optional alternative to
+  `GOOGLE_CREDENTIALS_JSON`.
+- `NEXT_PUBLIC_DASHBOARD_TIMEZONE`: optional default timezone, for example
+  `Europe/Paris`.
+
+Do not upload `dashboard/credentials.json` to Vercel or commit it to Git. The
+service account email in the JSON must be shared on the Google Sheet as a
+Viewer.
+
+5) Run the Streamlit dashboard locally
 
 ```sh
 cd dashboard
@@ -97,7 +134,7 @@ export DASHBOARD_TIMEZONE="Europe/Paris"
 
 The dashboard also includes a timezone selector in the sidebar.
 
-4) Configure and flash the ESP32
+6) Configure and flash the ESP32
 
 Create `firmware/temp_hum_complete/secrets.h` from the example:
 
@@ -193,8 +230,35 @@ scripts/firmware.sh help
 In VS Code, open the command palette and run `Tasks: Run Task`, then choose one
 of the `Firmware: ...` tasks.
 
-Dashboard Features
-------------------
+Vercel Dashboard
+----------------
+
+The root-level Next.js app is the Vercel deployment target.
+
+- `app/page.tsx`: dashboard UI.
+- `app/api/readings/route.ts`: Vercel serverless API route.
+- `lib/sheets.ts`: Google Sheets authentication, loading, and normalization.
+- `.env.example`: local and Vercel environment variable template.
+
+The Vercel dashboard includes:
+
+- Device, time range, timezone, Celsius/Fahrenheit, and auto-refresh controls.
+- Current and average temperature and humidity metrics.
+- Temperature and humidity trend chart.
+- Recent readings table.
+- Server-side Google Sheets access, so service account credentials are not
+  exposed to the browser.
+
+The API route supports the current Google Forms response sheet shape:
+
+- First timestamp column: Google Forms submission timestamp.
+- Temperature column: Celsius.
+- Humidity column: percent.
+- Device column: ESP32 MAC address.
+- Later timestamp column: device-generated ISO-8601 timestamp.
+
+Streamlit Dashboard Features
+----------------------------
 
 - Google Sheets connection status.
 - Device filter based on the device IDs in the sheet.
@@ -211,7 +275,18 @@ Dashboard Features
 Configuration
 -------------
 
-Dashboard environment variables:
+Vercel dashboard environment variables:
+
+- `GOOGLE_SHEETS_ID`: response sheet ID.
+- `GOOGLE_CREDENTIALS_JSON`: service account JSON content.
+- `GOOGLE_CLIENT_EMAIL` and `GOOGLE_PRIVATE_KEY`: optional alternative to
+  `GOOGLE_CREDENTIALS_JSON`.
+- `GOOGLE_CREDENTIALS_FILE`: local-only path to a Google service account JSON
+  file.
+- `NEXT_PUBLIC_DASHBOARD_TIMEZONE`: default timezone used by the React
+  dashboard.
+
+Streamlit dashboard environment variables:
 
 - `GOOGLE_CREDENTIALS_FILE`: path to a Google service account JSON file.
 - `GOOGLE_CREDENTIALS_JSON`: service account JSON content.

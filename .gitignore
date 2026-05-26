@@ -11,5 +11,16 @@ credentials.json
 server/instance/
 instance/
 .tools/
+
+# Next.js / Vercel
+node_modules/
+.next/
+.vercel/
+.env
+.env.production
+.env.local
+.env*.local
+npm-debug.log*
+*.tsbuildinfo
 */__pycache__/
 .DS_Store

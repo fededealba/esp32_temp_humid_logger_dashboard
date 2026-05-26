@@ -70,6 +70,17 @@ If you run Streamlit from the `dashboard/` directory, you can also place the
 service account JSON at `dashboard/credentials.json`. That file is ignored by
 Git.
 
+There is a placeholder example at `dashboard/credentials.example.json`, but the
+real `dashboard/credentials.json` should be the full JSON key downloaded from
+Google Cloud:
+
+```sh
+cp dashboard/credentials.example.json dashboard/credentials.json
+```
+
+Replace the placeholder values, or more commonly replace the copied file with
+the downloaded service account key JSON.
+
 3) Run the dashboard
 
 ```sh
@@ -88,7 +99,13 @@ The dashboard also includes a timezone selector in the sidebar.
 
 4) Configure and flash the ESP32
 
-Create `firmware/temp_hum_complete/secrets.h`:
+Create `firmware/temp_hum_complete/secrets.h` from the example:
+
+```sh
+cp firmware/temp_hum_complete/secrets.example.h firmware/temp_hum_complete/secrets.h
+```
+
+Then edit `firmware/temp_hum_complete/secrets.h`:
 
 ```cpp
 #pragma once

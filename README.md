@@ -86,7 +86,8 @@ the downloaded service account key JSON.
 
 3) Run the Vercel dashboard locally
 
-Install Node.js 20.9.0 or newer, then from the repo root:
+Install Node.js 20.9.0 or newer (Vercel builds are pinned to Node 22.x via the
+`package.json` `engines` field), then from the repo root:
 
 ```sh
 cp .env.example .env.local
@@ -235,16 +236,20 @@ Vercel Dashboard
 
 The root-level Next.js app is the Vercel deployment target.
 
-- `app/page.tsx`: dashboard UI.
+- `app/page.tsx`: dashboard UI, including the interactive Plotly trend chart
+  (lazy-loads `plotly.js-basic-dist-min` on the client).
 - `app/api/readings/route.ts`: Vercel serverless API route.
 - `lib/sheets.ts`: Google Sheets authentication, loading, and normalization.
+- `plotly.d.ts`: type shim mapping `plotly.js-basic-dist-min` to `plotly.js` types.
 - `.env.example`: local and Vercel environment variable template.
 
 The Vercel dashboard includes:
 
 - Device, time range, timezone, Celsius/Fahrenheit, and auto-refresh controls.
 - Current and average temperature and humidity metrics.
-- Temperature and humidity trend chart.
+- Interactive Plotly trend with separate temperature and humidity panels that
+  share one zoomable, pannable time axis (zooming the x-axis moves both). Hover
+  tooltips, auto-fitting humidity scale, and a zoom that survives auto-refresh.
 - Recent readings table.
 - Server-side Google Sheets access, so service account credentials are not
   exposed to the browser.

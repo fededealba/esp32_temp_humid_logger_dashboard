@@ -10,5 +10,6 @@ credentials.json
 # Local Flask instance data (deprecated)
 server/instance/
 instance/
+.tools/
 */__pycache__/
 .DS_Store

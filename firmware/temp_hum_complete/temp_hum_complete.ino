@@ -95,7 +95,7 @@ void loop() {
     if (currentMillis - lastScheduled > 10UL * BASE_INTERVAL_MS) {
       lastScheduled = currentMillis;
     } else {
-      lastScheduled += intervalMs; // prevent drift
+      lastScheduled = currentMillis; // do not burst-send to catch up
     }
 
     // Read sensors (with retries)
@@ -293,6 +293,7 @@ String buildFormPayload(float humidity, float temperature, unsigned long epoch) 
 unsigned long currentInterval() {
   // compute BASE_INTERVAL_MS * (2^backoffExp) with cap
   unsigned long scaled = BASE_INTERVAL_MS << backoffExp;
+  if (scaled < BASE_INTERVAL_MS) scaled = BASE_INTERVAL_MS;
   if (scaled > MAX_BACKOFF_MS) scaled = MAX_BACKOFF_MS;
   return scaled;
 }

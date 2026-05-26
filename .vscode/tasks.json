@@ -1,0 +1,50 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Firmware: install Arduino CLI",
+      "type": "shell",
+      "command": "make firmware-install-cli",
+      "problemMatcher": []
+    },
+    {
+      "label": "Firmware: setup Arduino CLI deps",
+      "type": "shell",
+      "command": "make firmware-setup",
+      "problemMatcher": []
+    },
+    {
+      "label": "Firmware: compile",
+      "type": "shell",
+      "command": "make firmware-compile",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Firmware: list ports",
+      "type": "shell",
+      "command": "make firmware-ports",
+      "problemMatcher": []
+    },
+    {
+      "label": "Firmware: upload",
+      "type": "shell",
+      "command": "PORT=${input:serialPort} make firmware-upload",
+      "problemMatcher": []
+    },
+    {
+      "label": "Firmware: monitor",
+      "type": "shell",
+      "command": "PORT=${input:serialPort} make firmware-monitor",
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "serialPort",
+      "type": "promptString",
+      "description": "ESP32 serial port, e.g. /dev/ttyUSB0, /dev/ttyACM0, or COM3",
+      "default": "/dev/ttyUSB0"
+    }
+  ]
+}

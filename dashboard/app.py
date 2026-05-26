@@ -1,16 +1,15 @@
 import os
+import json
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 import gspread
-from google.auth import default
 from google.oauth2.service_account import Credentials
-from datetime import datetime, timedelta, date, time as dtime, timezone
-import time
-from zoneinfo import ZoneInfo
-from pandas.api.types import is_datetime64tz_dtype
-import json
 
 # Set page config
 st.set_page_config(
@@ -24,8 +23,9 @@ st.title("ESP32 Weather Station Dashboard")
 st.markdown("Real-time temperature and humidity monitoring from ESP32 sensor data via Google Sheets")
 
 # Google Sheets configuration
+APP_DIR = Path(__file__).resolve().parent
 GOOGLE_SHEETS_ID = "1PWeQyc0tR10fEe9v0JoBriOJLLUz-M5jYO3oxx_Z2gI"
-CREDENTIALS_FILE = os.environ.get("GOOGLE_CREDENTIALS_FILE", "credentials.json")
+CREDENTIALS_FILE = os.environ.get("GOOGLE_CREDENTIALS_FILE", str(APP_DIR / "credentials.json"))
 
 def _local_timezone():
     # Check if user selected a timezone in the sidebar
@@ -55,15 +55,28 @@ def _get_gspread_client():
     try:
         # Try to load credentials from file
         if os.path.exists(CREDENTIALS_FILE):
-            creds = Credentials.from_service_account_file(
-                CREDENTIALS_FILE,
-                scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
-            )
+            try:
+                creds = Credentials.from_service_account_file(
+                    CREDENTIALS_FILE,
+                    scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
+                )
+            except json.JSONDecodeError as e:
+                st.error(
+                    f"Google credentials file is not valid JSON: {CREDENTIALS_FILE}. "
+                    "Use the full service account key JSON downloaded from Google Cloud."
+                )
+                st.caption(f"JSON parse error: line {e.lineno}, column {e.colno}: {e.msg}")
+                return None
         else:
             # Try to load from environment variable
             creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
             if creds_json:
-                creds_info = json.loads(creds_json)
+                try:
+                    creds_info = json.loads(creds_json)
+                except json.JSONDecodeError as e:
+                    st.error("GOOGLE_CREDENTIALS_JSON is not valid JSON.")
+                    st.caption(f"JSON parse error: line {e.lineno}, column {e.colno}: {e.msg}")
+                    return None
                 creds = Credentials.from_service_account_info(
                     creds_info,
                     scopes=['https://www.googleapis.com/auth/spreadsheets.readonly']
@@ -111,6 +124,7 @@ def load_data_from_sheets(max_rows: int = 2000):
 
         # Convert to DataFrame
         df = pd.DataFrame(data_rows, columns=fixed_headers)
+        df['_sheet_row'] = range(2, len(df) + 2)
 
         # Clean and process the data
         # Expected columns from Google Forms:
@@ -118,9 +132,6 @@ def load_data_from_sheets(max_rows: int = 2000):
 
         # Create a smarter column mapping
         actual_columns = df.columns.tolist()
-
-        # Print columns for debugging
-        st.sidebar.write("Debug - Sheet columns:", actual_columns)
 
         # Map columns based on content/position
         column_mapping = {}
@@ -147,6 +158,10 @@ def load_data_from_sheets(max_rows: int = 2000):
         if 'humidity' in df.columns:
             df['humidity'] = pd.to_numeric(df['humidity'], errors='coerce')
 
+        numeric_columns = [col for col in ['temperature', 'humidity'] if col in df.columns]
+        if numeric_columns:
+            df = df.dropna(subset=numeric_columns)
+
         # Parse timestamps
         if 'received_at' in df.columns:
             # Parse the timestamp and handle timezone properly
@@ -165,11 +180,18 @@ def load_data_from_sheets(max_rows: int = 2000):
             df['display_ts'] = df['received_at']
             df['ts'] = df['display_ts']  # Use local time as primary timestamp
 
-        # Add ID column (row number in reverse order for newest first)
-        df['id'] = range(len(df), 0, -1)
-
         # Sort by newest first and limit rows
-        df = df.sort_values(by='id', ascending=False).head(max_rows).reset_index(drop=True)
+        if 'ts_utc' in df.columns:
+            df = df.sort_values(
+                by=['ts_utc', '_sheet_row'],
+                ascending=[False, False],
+                na_position='last',
+            )
+        else:
+            df = df.sort_values(by='_sheet_row', ascending=False)
+
+        df = df.head(max_rows).reset_index(drop=True)
+        df['id'] = df['_sheet_row']
 
         return df
 
@@ -224,19 +246,17 @@ if current_tz_str not in common_timezones:
 else:
     timezone_options = common_timezones
 
-default_index = timezone_options.index(current_tz_str) if current_tz_str in timezone_options else 0
+if 'selected_timezone' not in st.session_state:
+    st.session_state.selected_timezone = current_tz_str
+
+default_index = timezone_options.index(st.session_state.selected_timezone) if st.session_state.selected_timezone in timezone_options else 0
 
 selected_tz = st.sidebar.selectbox(
     "Timezone",
     timezone_options,
     index=default_index,
-    key='timezone_selector'
+    key='selected_timezone'
 )
-
-# Store selected timezone in session state
-if selected_tz != st.session_state.get('selected_timezone'):
-    st.session_state.selected_timezone = selected_tz
-    st.rerun()
 
 # Update local_tz based on selection
 local_tz = _local_timezone()
@@ -248,8 +268,8 @@ st.sidebar.write("Google Sheets:", "✅ Connected" if health_ok else "❌ Error"
 
 max_rows = st.sidebar.slider("Max rows", 500, 20000, 4000, step=500)
 
-auto_refresh = st.sidebar.checkbox("Auto-refresh data", value=True)
-refresh_interval = st.sidebar.slider("Refresh interval (seconds)", 5, 60, 30)
+auto_refresh = st.sidebar.checkbox("Auto-refresh data", value=False)
+refresh_interval = st.sidebar.slider("Refresh interval (seconds)", 5, 60, 30) if auto_refresh else 30
 
 # Device filter
 devices = load_devices()
@@ -331,7 +351,7 @@ else:
                     'steps': steps
                 }
             ))
-            st.plotly_chart(fig_temp_gauge, use_container_width=True)
+            st.plotly_chart(fig_temp_gauge, width="stretch")
 
         # Current humidity with gauge
         if 'humidity' in df.columns:
@@ -356,7 +376,7 @@ else:
                     ]
                 }
             ))
-            st.plotly_chart(fig_hum_gauge, use_container_width=True)
+            st.plotly_chart(fig_hum_gauge, width="stretch")
 
     # Historical data in the second column
     with col2:
@@ -394,7 +414,7 @@ else:
                     yaxis2=dict(title='Humidity (%)', overlaying='y', side='right', range=[0, 100]) if 'humidity' in df_plot.columns else None,
                     legend=dict(orientation='h')
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
 
     # Data statistics and table
     st.subheader("Data Statistics")

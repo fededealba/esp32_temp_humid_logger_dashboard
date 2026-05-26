@@ -253,6 +253,8 @@ The Vercel dashboard includes:
   share one zoomable, pannable time axis (zooming the x-axis moves both). Hover
   tooltips, auto-fitting humidity scale, and a zoom that survives auto-refresh.
 - Recent readings table.
+- Stale-data warning banner when the newest reading for the selected device is
+  more than 5 minutes old (the ESP32 posts every ~60s).
 - Server-side Google Sheets access, so service account credentials are not
   exposed to the browser.
 

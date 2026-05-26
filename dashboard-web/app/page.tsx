@@ -49,6 +49,17 @@ const RANGES = [
   { label: "All", hours: null },
 ];
 
+// Warn when the newest reading is older than this; the ESP32 posts every ~60s.
+const STALE_AFTER_MS = 5 * 60 * 1000;
+
+function formatAge(ms: number) {
+  const minutes = Math.floor(ms / 60000);
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `${hours} h ${rest} min` : `${hours} h`;
+}
+
 function formatNumber(value: number, digits = 1) {
   return new Intl.NumberFormat("en-US", {
     minimumFractionDigits: digits,
@@ -332,6 +343,16 @@ export default function Page() {
   const avgHumidity = average(filtered.map((reading) => reading.humidity));
   const tempUnit = useFahrenheit ? "F" : "C";
 
+  // Newest reading for the selected device, ignoring the time-range filter, so
+  // staleness is detected even when the chosen range hides an offline device.
+  const newestForDevice = useMemo(() => {
+    const pool = device === "all" ? readings : readings.filter((reading) => reading.deviceId === device);
+    return pool.find((reading) => reading.timestampMs) ?? null;
+  }, [device, readings]);
+  const lastAgeMs =
+    newestForDevice?.timestampMs != null ? Date.now() - newestForDevice.timestampMs : null;
+  const isStale = lastAgeMs !== null && lastAgeMs > STALE_AFTER_MS;
+
   return (
     <main className="page">
       <header className="topbar">
@@ -389,6 +410,14 @@ export default function Page() {
           Auto-refresh
         </label>
       </section>
+
+      {isStale && lastAgeMs !== null && newestForDevice ? (
+        <div className="warning-banner" role="status">
+          ⚠ No new readings for {formatAge(lastAgeMs)}
+          {device !== "all" ? ` from ${device}` : ""} — the device may be offline.{" "}
+          Last reading {formatTime(newestForDevice, timezone)}.
+        </div>
+      ) : null}
 
       {error ? <div className="error-banner">{error}</div> : null}
 

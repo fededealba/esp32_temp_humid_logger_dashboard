@@ -231,12 +231,21 @@ td:nth-child(4) {
 }
 
 .empty-panel,
+.warning-banner,
 .error-banner {
   margin: 14px;
   padding: 14px;
   border-radius: 6px;
   background: var(--surface-strong);
   color: var(--muted);
+}
+
+.warning-banner {
+  margin: 16px 0 0;
+  border: 1px solid #f5d58a;
+  background: #fff8e6;
+  color: #8a6d1a;
+  font-weight: 600;
 }
 
 .error-banner {

@@ -51,19 +51,28 @@ function fixPrivateKey(privateKey: string) {
 }
 
 async function loadLocalCredentials(): Promise<ServiceAccountCredentials | null> {
-  const credentialPath =
-    process.env.GOOGLE_CREDENTIALS_FILE ||
-    path.join(process.cwd(), "dashboard", "credentials.json");
+  // Try an explicit path first, then the repo-root dashboard/credentials.json
+  // whether the app is run from the repo root or from this dashboard-web/ dir.
+  const candidates = process.env.GOOGLE_CREDENTIALS_FILE
+    ? [process.env.GOOGLE_CREDENTIALS_FILE]
+    : [
+        path.join(process.cwd(), "dashboard", "credentials.json"),
+        path.join(process.cwd(), "..", "dashboard", "credentials.json"),
+      ];
 
-  try {
-    const raw = await fs.readFile(credentialPath, "utf8");
-    return JSON.parse(raw) as ServiceAccountCredentials;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return null;
+  for (const credentialPath of candidates) {
+    try {
+      const raw = await fs.readFile(credentialPath, "utf8");
+      return JSON.parse(raw) as ServiceAccountCredentials;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        continue;
+      }
+      throw new Error(`Could not read Google credentials file at ${credentialPath}`);
     }
-    throw new Error(`Could not read Google credentials file at ${credentialPath}`);
   }
+
+  return null;
 }
 
 async function loadCredentials() {

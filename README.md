@@ -8,12 +8,11 @@ This branch uses Google Forms and Google Sheets for ingestion and storage.
 
 - `firmware/`: ESP32 Arduino sketch for a DHT22 sensor. It submits
   temperature, humidity, device ID, and timestamp values to a Google Form.
-- Root Next.js app: Vercel-deployable dashboard. It reads the linked Google
-  Sheet through a serverless API route and renders the dashboard in React.
+- `dashboard-web/`: Next.js app and Vercel deployment target. It reads the
+  linked Google Sheet through a serverless API route and renders the dashboard
+  in React.
 - `dashboard/`: Streamlit dashboard. It reads the linked Google Sheet with
   Google service account credentials and renders metrics, charts, and raw data.
-- `scripts/start_all.py`: legacy helper for the old Flask API flow. It is not
-  used by the current Google Forms/Sheets setup.
 
 No local Flask server or SQLite database is required for the current flow.
 
@@ -87,9 +86,10 @@ the downloaded service account key JSON.
 3) Run the Vercel dashboard locally
 
 Install Node.js 20.9.0 or newer (Vercel builds are pinned to Node 22.x via the
-`package.json` `engines` field), then from the repo root:
+`package.json` `engines` field), then from the `dashboard-web/` directory:
 
 ```sh
+cd dashboard-web
 cp .env.example .env.local
 npm install
 npm run dev
@@ -105,8 +105,9 @@ Open <http://localhost:3000>.
 
 4) Deploy the Vercel dashboard
 
-Create a Vercel project from this repository. Set these environment variables
-in the Vercel project settings:
+Create a Vercel project from this repository. Set the project **Root Directory**
+to `dashboard-web` (Settings -> Build & Deployment), then set these environment
+variables in the Vercel project settings:
 
 - `GOOGLE_SHEETS_ID`: the linked response spreadsheet ID.
 - `GOOGLE_CREDENTIALS_JSON`: the full service account key JSON.
@@ -234,7 +235,8 @@ of the `Firmware: ...` tasks.
 Vercel Dashboard
 ----------------
 
-The root-level Next.js app is the Vercel deployment target.
+The `dashboard-web/` Next.js app is the Vercel deployment target (paths below
+are relative to `dashboard-web/`).
 
 - `app/page.tsx`: dashboard UI, including the interactive Plotly trend chart
   (lazy-loads `plotly.js-basic-dist-min` on the client).

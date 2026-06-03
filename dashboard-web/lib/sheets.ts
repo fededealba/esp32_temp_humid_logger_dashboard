@@ -19,7 +19,30 @@ export type ReadingsResponse = {
   generatedAt: string;
   sheetTitle: string;
   rowsLoaded: number;
+  rowsInRange: number;
+  stride: number;
+  rangeHours: number | null;
   readings: Reading[];
+};
+
+export type LoadReadingsOptions = {
+  /**
+   * Time window in hours from now. `null` means no window (use `limit` instead).
+   * When set, rows older than `Date.now() - rangeHours * 3600_000` are dropped
+   * before downsampling.
+   */
+  rangeHours?: number | null;
+  /**
+   * Hard cap on rows returned when no `rangeHours` is given. Ignored when a
+   * window is active.
+   */
+  limit?: number;
+  /**
+   * Target maximum number of points returned after stride downsampling. The
+   * stride is `ceil(rowsInWindow / maxPoints)`, so the actual output may be a
+   * bit smaller than this.
+   */
+  maxPoints?: number;
 };
 
 type ServiceAccountCredentials = {
@@ -174,7 +197,7 @@ function mapHeader(header: string, index: number) {
   return null;
 }
 
-function normalizeRows(values: string[][], limit: number): Reading[] {
+function normalizeRows(values: string[][]): Reading[] {
   if (values.length < 2) return [];
 
   const headers = uniqueHeaders(values[0]);
@@ -208,17 +231,34 @@ function normalizeRows(values: string[][], limit: number): Reading[] {
     } satisfies Reading;
   });
 
-  return readings
-    .sort((a, b) => {
-      if (a.timestampMs && b.timestampMs) return b.timestampMs - a.timestampMs;
-      if (a.timestampMs) return -1;
-      if (b.timestampMs) return 1;
-      return b.sheetRow - a.sheetRow;
-    })
-    .slice(0, limit);
+  // Newest first; rows without timestamps fall to the back.
+  return readings.sort((a, b) => {
+    if (a.timestampMs && b.timestampMs) return b.timestampMs - a.timestampMs;
+    if (a.timestampMs) return -1;
+    if (b.timestampMs) return 1;
+    return b.sheetRow - a.sheetRow;
+  });
 }
 
-export async function loadReadings(limit = 5000): Promise<ReadingsResponse> {
+/**
+ * Reduce `readings` to at most `maxPoints` entries by taking every Nth row
+ * (stride sampling). Input is expected newest-first; the newest reading is
+ * always kept so the latest values shown on the dashboard match the sheet.
+ */
+function downsampleByStride(readings: Reading[], maxPoints: number): { rows: Reading[]; stride: number } {
+  if (readings.length <= maxPoints || maxPoints <= 0) {
+    return { rows: readings, stride: 1 };
+  }
+  const stride = Math.ceil(readings.length / maxPoints);
+  const rows: Reading[] = [];
+  for (let i = 0; i < readings.length; i += stride) {
+    rows.push(readings[i]);
+  }
+  return { rows, stride };
+}
+
+export async function loadReadings(options: LoadReadingsOptions = {}): Promise<ReadingsResponse> {
+  const { rangeHours = null, limit = 5000, maxPoints = 2000 } = options;
   const spreadsheetId = getSpreadsheetId();
   const metadataUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets(properties(title))`;
   const metadata = await sheetsFetch<SpreadsheetMetadataResponse>(metadataUrl);
@@ -234,13 +274,27 @@ export async function loadReadings(limit = 5000): Promise<ReadingsResponse> {
   )}?majorDimension=ROWS`;
   const sheetValues = await sheetsFetch<SheetValuesResponse>(valuesUrl);
   const values = sheetValues.values ?? [];
-  const readings = normalizeRows(values, limit);
+  const allReadings = normalizeRows(values);
+
+  // Window first (when requested), then bound by `limit`, then downsample.
+  let windowed = allReadings;
+  if (rangeHours !== null && rangeHours > 0) {
+    const cutoff = Date.now() - rangeHours * 60 * 60 * 1000;
+    windowed = allReadings.filter((r) => r.timestampMs !== null && r.timestampMs >= cutoff);
+  } else {
+    windowed = allReadings.slice(0, Math.max(1, limit));
+  }
+
+  const { rows: readings, stride } = downsampleByStride(windowed, maxPoints);
 
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
     sheetTitle,
     rowsLoaded: Math.max(values.length - 1, 0),
+    rowsInRange: windowed.length,
+    stride,
+    rangeHours,
     readings,
   };
 }

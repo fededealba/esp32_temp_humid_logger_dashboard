@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Config, Data, Layout } from "plotly.js";
 
 type Reading = {
@@ -21,6 +21,9 @@ type ApiResponse =
       generatedAt: string;
       sheetTitle: string;
       rowsLoaded: number;
+      rowsInRange: number;
+      stride: number;
+      rangeHours: number | null;
       readings: Reading[];
     }
   | {
@@ -292,11 +295,14 @@ export default function Page() {
   const [timezone, setTimezone] = useState(process.env.NEXT_PUBLIC_DASHBOARD_TIMEZONE || "Europe/Paris");
   const [autoRefresh, setAutoRefresh] = useState(true);
 
-  async function refresh() {
+  // The server windows + downsamples based on `range_hours`, so the payload
+  // size scales with the selected range instead of always being 5000 rows.
+  const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch("/api/readings?limit=5000", { cache: "no-store" });
+      const rangeParam = rangeHours === null ? "all" : String(rangeHours);
+      const response = await fetch(`/api/readings?range_hours=${rangeParam}`, { cache: "no-store" });
       const payload = (await response.json()) as ApiResponse;
       if (!response.ok || !payload.ok) {
         throw new Error(payload.ok ? "Could not load readings" : payload.error);
@@ -307,17 +313,17 @@ export default function Page() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [rangeHours]);
 
   useEffect(() => {
     refresh();
-  }, []);
+  }, [refresh]);
 
   useEffect(() => {
     if (!autoRefresh) return;
     const interval = window.setInterval(refresh, 30000);
     return () => window.clearInterval(interval);
-  }, [autoRefresh]);
+  }, [autoRefresh, refresh]);
 
   const readings = data?.ok ? data.readings : [];
   const devices = useMemo(() => {

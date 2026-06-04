@@ -134,10 +134,14 @@ function TrendChart({
   readings,
   useFahrenheit,
   timezone,
+  viewKey,
 }: {
   readings: Reading[];
   useFahrenheit: boolean;
   timezone: string;
+  // Bumps when the user changes range or device; resets axis state so the
+  // y-bounds recompute. Stays stable across the 30s auto-refresh.
+  viewKey: string;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -226,8 +230,9 @@ function TrendChart({
     const layout: Partial<Layout> = {
       autosize: true,
       height: 460,
-      // Keep zoom/pan across the 30s auto-refresh; reset only on unit/tz change.
-      uirevision: `${useFahrenheit ? "f" : "c"}|${timezone}`,
+      // Keep zoom/pan across the 30s auto-refresh; reset whenever the user
+      // changes units, timezone, range, or selected device.
+      uirevision: `${useFahrenheit ? "f" : "c"}|${timezone}|${viewKey}`,
       margin: { l: 56, r: 24, t: 16, b: 44 },
       paper_bgcolor: "rgba(0,0,0,0)",
       plot_bgcolor: "rgba(0,0,0,0)",
@@ -280,7 +285,7 @@ function TrendChart({
     return () => {
       cancelled = true;
     };
-  }, [chartReadings, hasEnough, useFahrenheit, timezone]);
+  }, [chartReadings, hasEnough, useFahrenheit, timezone, viewKey]);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -506,7 +511,12 @@ export default function Page() {
                   : `${filtered.length} readings`}
             </span>
           </div>
-          <TrendChart readings={filtered} useFahrenheit={useFahrenheit} timezone={timezone} />
+          <TrendChart
+            readings={filtered}
+            useFahrenheit={useFahrenheit}
+            timezone={timezone}
+            viewKey={`${rangeHours ?? "all"}|${device}`}
+          />
         </section>
 
         <section className="panel table-panel">

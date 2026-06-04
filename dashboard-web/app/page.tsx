@@ -443,7 +443,11 @@ export default function Page() {
         <MetricCard
           label="Average Temperature"
           value={avgTempC === null ? "--" : `${formatNumber(useFahrenheit ? toFahrenheit(avgTempC) : avgTempC)}°${tempUnit}`}
-          detail={`${filtered.length} readings`}
+          detail={
+            data?.ok && data.stride > 1
+              ? `${filtered.length} pts · 1 every ${data.stride} min`
+              : `${filtered.length} readings`
+          }
           tone="neutral"
         />
         <MetricCard
@@ -458,7 +462,13 @@ export default function Page() {
         <section className="panel chart-panel">
           <div className="panel-header">
             <h2>Trend</h2>
-            <span>{loading ? "Loading" : `${filtered.length} readings`}</span>
+            <span>
+              {loading
+                ? "Loading"
+                : data?.ok && data.stride > 1
+                  ? `${filtered.length} pts · 1 every ${data.stride} min`
+                  : `${filtered.length} readings`}
+            </span>
           </div>
           <TrendChart readings={filtered} useFahrenheit={useFahrenheit} timezone={timezone} />
         </section>

@@ -15,20 +15,25 @@ function parseIntParam(value: string | null, fallback: number, min: number, max:
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
 
-  // `range_hours` is the new primary parameter. Accept "all" (or empty) to
-  // disable the window and fall back to the legacy `limit` cap. Older callers
-  // that only pass `limit` keep working.
+  // `range_hours` is the new primary parameter:
+  //   range_hours=<n>  -> window of n hours
+  //   range_hours=all  -> no window AND no row cap (downsampling bounds size)
+  //   (missing)        -> legacy mode: respect `limit` (default 5000)
   const rangeParam = searchParams.get("range_hours");
+  const maxPoints = parseIntParam(searchParams.get("max_points"), 2000, 100, 10000);
+
   let rangeHours: number | null = null;
-  if (rangeParam !== null && rangeParam !== "" && rangeParam !== "all") {
+  let limit = parseIntParam(searchParams.get("limit"), 5000, 1, 20000);
+
+  if (rangeParam === "all") {
+    // Show everything; rely on stride downsampling to keep the payload sane.
+    limit = Number.MAX_SAFE_INTEGER;
+  } else if (rangeParam !== null && rangeParam !== "") {
     const n = Number(rangeParam);
     if (Number.isFinite(n) && n > 0) {
       rangeHours = Math.min(n, 24 * 365); // sanity cap: one year
     }
   }
-
-  const limit = parseIntParam(searchParams.get("limit"), 5000, 1, 20000);
-  const maxPoints = parseIntParam(searchParams.get("max_points"), 2000, 100, 10000);
 
   try {
     const data = await loadReadings({ rangeHours, limit, maxPoints });

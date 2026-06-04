@@ -158,30 +158,66 @@ function TrendChart({
 
     let cancelled = false;
     const tempUnit = useFahrenheit ? "°F" : "°C";
-    const x = chartReadings.map((reading) => zonedDateString(reading.timestampMs ?? 0, timezone));
-    const hums = chartReadings.map((reading) => reading.humidity);
-    const humMin = Math.max(0, Math.min(...hums) - 5);
-    const humMax = Math.min(100, Math.max(...hums) + 5);
+
+    // Detect gaps so Plotly doesn't draw straight lines across outages.
+    // Threshold = max(3 * median spacing, 3 min). When two consecutive points
+    // straddle a gap, we insert a null y so the line breaks there, and bump
+    // the marker size on the boundary points so the user sees the data ends.
+    const ts = chartReadings.map((r) => r.timestampMs ?? 0);
+    const dts: number[] = [];
+    for (let i = 1; i < ts.length; i++) dts.push(ts[i] - ts[i - 1]);
+    const sortedDts = dts.slice().sort((a, b) => a - b);
+    const medianDt = sortedDts.length > 0 ? sortedDts[Math.floor(sortedDts.length / 2)] : 60_000;
+    const gapThreshold = Math.max(3 * medianDt, 3 * 60_000);
+
+    const x: string[] = [];
+    const tempY: (number | null)[] = [];
+    const humY: (number | null)[] = [];
+    const markerSize: number[] = [];
+
+    for (let i = 0; i < chartReadings.length; i++) {
+      const r = chartReadings[i];
+      const t = ts[i];
+      const prevGap = i > 0 && t - ts[i - 1] > gapThreshold;
+      const nextGap = i + 1 < ts.length && ts[i + 1] - t > gapThreshold;
+
+      x.push(zonedDateString(t, timezone));
+      tempY.push(useFahrenheit ? toFahrenheit(r.temperature) : r.temperature);
+      humY.push(r.humidity);
+      markerSize.push(prevGap || nextGap ? 5 : 0);
+
+      if (nextGap) {
+        // Insert a null right after to break the line up to the next point.
+        x.push(zonedDateString(t + 1, timezone));
+        tempY.push(null);
+        humY.push(null);
+        markerSize.push(0);
+      }
+    }
+
+    const humsForRange = humY.filter((v): v is number => v !== null);
+    const humMin = humsForRange.length ? Math.max(0, Math.min(...humsForRange) - 5) : 0;
+    const humMax = humsForRange.length ? Math.min(100, Math.max(...humsForRange) + 5) : 100;
 
     const data: Data[] = [
       {
         type: "scatter",
-        mode: "lines",
+        mode: "lines+markers",
         name: `Temperature (${tempUnit})`,
         x,
-        y: chartReadings.map((reading) =>
-          useFahrenheit ? toFahrenheit(reading.temperature) : reading.temperature,
-        ),
+        y: tempY,
         line: { color: "#c2410c", width: 2.5 },
+        marker: { color: "#c2410c", size: markerSize },
         hovertemplate: `%{y:.1f}${tempUnit}<extra></extra>`,
       },
       {
         type: "scatter",
-        mode: "lines",
+        mode: "lines+markers",
         name: "Humidity (%)",
         x,
-        y: hums,
+        y: humY,
         line: { color: "#087ea4", width: 2.5 },
+        marker: { color: "#087ea4", size: markerSize },
         hovertemplate: "%{y:.1f}%<extra></extra>",
         yaxis: "y2",
       },

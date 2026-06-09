@@ -52,8 +52,11 @@ const RANGES = [
   { label: "All", hours: null },
 ];
 
-// Warn when the newest reading is older than this; the ESP32 posts every ~60s.
-const STALE_AFTER_MS = 5 * 60 * 1000;
+// Cadence the ESP32 firmware posts at (BASE_INTERVAL_MS). Drives both the
+// staleness threshold and the chart-gap detection floor.
+const POST_INTERVAL_MS = 60 * 1000;
+// Warn when the newest reading is older than ~5 missed posts.
+const STALE_AFTER_MS = 5 * POST_INTERVAL_MS;
 
 function formatAge(ms: number) {
   const minutes = Math.floor(ms / 60000);
@@ -171,8 +174,9 @@ function TrendChart({
     const dts: number[] = [];
     for (let i = 1; i < ts.length; i++) dts.push(ts[i] - ts[i - 1]);
     const sortedDts = dts.slice().sort((a, b) => a - b);
-    const medianDt = sortedDts.length > 0 ? sortedDts[Math.floor(sortedDts.length / 2)] : 60_000;
-    const gapThreshold = Math.max(3 * medianDt, 3 * 60_000);
+    const medianDt =
+      sortedDts.length > 0 ? sortedDts[Math.floor(sortedDts.length / 2)] : POST_INTERVAL_MS;
+    const gapThreshold = Math.max(3 * medianDt, 3 * POST_INTERVAL_MS);
 
     const x: string[] = [];
     const tempY: (number | null)[] = [];
@@ -191,8 +195,9 @@ function TrendChart({
       markerSize.push(prevGap || nextGap ? 5 : 0);
 
       if (nextGap) {
-        // Insert a null right after to break the line up to the next point.
-        x.push(zonedDateString(t + 1, timezone));
+        // Insert a null at the midpoint of the gap so the break has a distinct
+        // x and Plotly draws no line between the two real points.
+        x.push(zonedDateString((t + ts[i + 1]) / 2, timezone));
         tempY.push(null);
         humY.push(null);
         markerSize.push(0);
@@ -486,7 +491,7 @@ export default function Page() {
           value={avgTempC === null ? "--" : `${formatNumber(useFahrenheit ? toFahrenheit(avgTempC) : avgTempC)}°${tempUnit}`}
           detail={
             data?.ok && data.stride > 1
-              ? `${filtered.length} pts · 1 every ${data.stride} min`
+              ? `${filtered.length} pts (every ${data.stride}th)`
               : `${filtered.length} readings`
           }
           tone="neutral"
@@ -507,7 +512,7 @@ export default function Page() {
               {loading
                 ? "Loading"
                 : data?.ok && data.stride > 1
-                  ? `${filtered.length} pts · 1 every ${data.stride} min`
+                  ? `${filtered.length} pts (every ${data.stride}th)`
                   : `${filtered.length} readings`}
             </span>
           </div>

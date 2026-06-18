@@ -77,6 +77,19 @@ function toFahrenheit(celsius: number) {
   return celsius * 1.8 + 32;
 }
 
+// Rothfusz regression of Steadman's heat-index table. Only meaningful above
+// ~27 °C; below that the perceived temperature is essentially the air temp.
+function heatIndexCelsius(tempC: number, humidity: number): number {
+  if (tempC < 26.7) return tempC;
+  const T = tempC * 9 / 5 + 32;
+  const R = humidity;
+  const hiF =
+    -42.379 + 2.04901523 * T + 10.14333127 * R - 0.22475541 * T * R
+    - 0.00683783 * T * T - 0.05481717 * R * R + 0.00122874 * T * T * R
+    + 0.00085282 * T * R * R - 0.00000199 * T * T * R * R;
+  return ((hiF - 32) * 5) / 9;
+}
+
 function formatTime(reading: Reading, timezone: string) {
   if (!reading.timestampMs) return "No timestamp";
   return new Intl.DateTimeFormat("en-US", {
@@ -86,16 +99,6 @@ function formatTime(reading: Reading, timezone: string) {
     minute: "2-digit",
     timeZone: timezone,
   }).format(new Date(reading.timestampMs));
-}
-
-function average(values: number[]) {
-  if (!values.length) return null;
-  return values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-function delta(current: number, previous?: number) {
-  if (previous === undefined) return null;
-  return current - previous;
 }
 
 type PlotlyApi = typeof import("plotly.js");
@@ -133,25 +136,26 @@ function zonedDateString(timestampMs: number, timeZone: string): string {
   return `${map.year}-${map.month}-${map.day} ${hour}:${map.minute}:${map.second}`;
 }
 
-function TrendChart({
+function MetricChart({
   readings,
+  metric,
   useFahrenheit,
   timezone,
   viewKey,
 }: {
   readings: Reading[];
+  metric: "temperature" | "humidity";
   useFahrenheit: boolean;
   timezone: string;
-  // Bumps when the user changes range or device; resets axis state so the
-  // y-bounds recompute. Stays stable across the 30s auto-refresh.
   viewKey: string;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const isTemp = metric === "temperature";
 
   const chartReadings = useMemo(
     () =>
       readings
-        .filter((reading) => reading.timestampMs)
+        .filter((r) => r.timestampMs)
         .slice()
         .sort((a, b) => (a.timestampMs ?? 0) - (b.timestampMs ?? 0)),
     [readings],
@@ -160,16 +164,11 @@ function TrendChart({
   const hasEnough = chartReadings.length >= 2;
 
   useEffect(() => {
-    const element = containerRef.current;
-    if (!element || !hasEnough) return;
+    if (!containerRef.current || !hasEnough) return;
 
     let cancelled = false;
     const tempUnit = useFahrenheit ? "°F" : "°C";
 
-    // Detect gaps so Plotly doesn't draw straight lines across outages.
-    // Threshold = max(3 * median spacing, 3 min). When two consecutive points
-    // straddle a gap, we insert a null y so the line breaks there, and bump
-    // the marker size on the boundary points so the user sees the data ends.
     const ts = chartReadings.map((r) => r.timestampMs ?? 0);
     const dts: number[] = [];
     for (let i = 1; i < ts.length; i++) dts.push(ts[i] - ts[i - 1]);
@@ -179,8 +178,7 @@ function TrendChart({
     const gapThreshold = Math.max(3 * medianDt, 3 * POST_INTERVAL_MS);
 
     const x: string[] = [];
-    const tempY: (number | null)[] = [];
-    const humY: (number | null)[] = [];
+    const y: (number | null)[] = [];
     const markerSize: number[] = [];
 
     for (let i = 0; i < chartReadings.length; i++) {
@@ -188,88 +186,75 @@ function TrendChart({
       const t = ts[i];
       const prevGap = i > 0 && t - ts[i - 1] > gapThreshold;
       const nextGap = i + 1 < ts.length && ts[i + 1] - t > gapThreshold;
+      const value = isTemp
+        ? useFahrenheit
+          ? toFahrenheit(r.temperature)
+          : r.temperature
+        : r.humidity;
 
       x.push(zonedDateString(t, timezone));
-      tempY.push(useFahrenheit ? toFahrenheit(r.temperature) : r.temperature);
-      humY.push(r.humidity);
+      y.push(value);
       markerSize.push(prevGap || nextGap ? 5 : 0);
 
       if (nextGap) {
-        // Insert a null at the midpoint of the gap so the break has a distinct
-        // x and Plotly draws no line between the two real points.
         x.push(zonedDateString((t + ts[i + 1]) / 2, timezone));
-        tempY.push(null);
-        humY.push(null);
+        y.push(null);
         markerSize.push(0);
       }
     }
 
-    const humsForRange = humY.filter((v): v is number => v !== null);
-    const humMin = humsForRange.length ? Math.max(0, Math.min(...humsForRange) - 5) : 0;
-    const humMax = humsForRange.length ? Math.min(100, Math.max(...humsForRange) + 5) : 100;
+    const validY = y.filter((v): v is number => v !== null);
+    const yMin = validY.length
+      ? isTemp
+        ? Math.min(...validY) - 1
+        : Math.max(0, Math.min(...validY) - 5)
+      : 0;
+    const yMax = validY.length
+      ? isTemp
+        ? Math.max(...validY) + 1
+        : Math.min(100, Math.max(...validY) + 5)
+      : 100;
+
+    const lineColor = isTemp ? "#c2410c" : "#087ea4";
+    const fillColor = isTemp ? "rgba(194, 65, 12, 0.12)" : "rgba(8, 126, 164, 0.12)";
+    const hoverFmt = isTemp ? `%{y:.1f}${tempUnit}<extra></extra>` : "%{y:.1f}%<extra></extra>";
 
     const data: Data[] = [
       {
         type: "scatter",
         mode: "lines+markers",
-        name: `Temperature (${tempUnit})`,
         x,
-        y: tempY,
-        line: { color: "#c2410c", width: 2.5 },
-        marker: { color: "#c2410c", size: markerSize },
-        hovertemplate: `%{y:.1f}${tempUnit}<extra></extra>`,
-      },
-      {
-        type: "scatter",
-        mode: "lines+markers",
-        name: "Humidity (%)",
-        x,
-        y: humY,
-        line: { color: "#087ea4", width: 2.5 },
-        marker: { color: "#087ea4", size: markerSize },
-        hovertemplate: "%{y:.1f}%<extra></extra>",
-        yaxis: "y2",
+        y,
+        line: { color: lineColor, width: 2.5, shape: "linear" },
+        marker: { color: lineColor, size: markerSize },
+        fill: "tozeroy",
+        fillcolor: fillColor,
+        hovertemplate: hoverFmt,
       },
     ];
 
     const layout: Partial<Layout> = {
       autosize: true,
-      height: 460,
-      // Keep zoom/pan across the 30s auto-refresh; reset whenever the user
-      // changes units, timezone, range, or selected device.
+      height: 280,
       uirevision: `${useFahrenheit ? "f" : "c"}|${timezone}|${viewKey}`,
-      margin: { l: 56, r: 24, t: 16, b: 44 },
+      margin: { l: 56, r: 24, t: 12, b: 44 },
       paper_bgcolor: "rgba(0,0,0,0)",
       plot_bgcolor: "rgba(0,0,0,0)",
       font: { family: "Inter, ui-sans-serif, system-ui, sans-serif", size: 12, color: "#607080" },
       hovermode: "x unified",
       hoverlabel: { bgcolor: "#ffffff", bordercolor: "#d8e0e6", font: { color: "#182027" } },
-      legend: { orientation: "h", yanchor: "bottom", y: 1.02, xanchor: "left", x: 0 },
-      // Single shared x-axis (anchored to the bottom subplot) so zooming x
-      // applies to both panels at once.
+      showlegend: false,
       xaxis: {
         type: "date",
-        anchor: "y2",
         hoverformat: "%b %d, %H:%M",
         gridcolor: "#eef2f4",
         linecolor: "#b8c3cc",
         tickcolor: "#b8c3cc",
         zeroline: false,
       },
-      // Temperature panel (top).
       yaxis: {
-        domain: [0.56, 1],
-        title: { text: `Temperature (${tempUnit})`, font: { color: "#c2410c" } },
-        tickfont: { color: "#c2410c" },
-        gridcolor: "#eef2f4",
-        zeroline: false,
-      },
-      // Humidity panel (bottom).
-      yaxis2: {
-        domain: [0, 0.44],
-        title: { text: "Humidity (%)", font: { color: "#087ea4" } },
-        tickfont: { color: "#087ea4" },
-        range: [humMin, humMax],
+        tickfont: { color: lineColor },
+        range: [yMin, yMax],
         gridcolor: "#eef2f4",
         zeroline: false,
       },
@@ -290,7 +275,7 @@ function TrendChart({
     return () => {
       cancelled = true;
     };
-  }, [chartReadings, hasEnough, useFahrenheit, timezone, viewKey]);
+  }, [chartReadings, hasEnough, isTemp, useFahrenheit, timezone, viewKey]);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -303,7 +288,7 @@ function TrendChart({
 
   return (
     <div className="chart-shell">
-      <div ref={containerRef} style={{ minHeight: 460, display: hasEnough ? "block" : "none" }} />
+      <div ref={containerRef} style={{ minHeight: 280, display: hasEnough ? "block" : "none" }} />
       {hasEnough ? null : (
         <div className="empty-panel">Waiting for enough timestamped readings.</div>
       )}
@@ -440,22 +425,64 @@ function ScatterChart({
   );
 }
 
-function MetricCard({
-  label,
-  value,
-  detail,
-  tone,
+function StatusCard({
+  currentTempC,
+  humidity,
+  useFahrenheit,
 }: {
-  label: string;
-  value: string;
-  detail: string;
-  tone: "temp" | "humidity" | "neutral";
+  currentTempC: number | null;
+  humidity: number | null;
+  useFahrenheit: boolean;
 }) {
+  const tempUnit = useFahrenheit ? "F" : "C";
+  const displayTemp =
+    currentTempC === null
+      ? null
+      : useFahrenheit
+        ? toFahrenheit(currentTempC)
+        : currentTempC;
+  const heatC = currentTempC === null || humidity === null ? null : heatIndexCelsius(currentTempC, humidity);
+  const displayHeat =
+    heatC === null ? null : useFahrenheit ? toFahrenheit(heatC) : heatC;
+
+  // Clamp the marker so it sits inside the gauge for any input.
+  const markerPct = humidity === null ? null : Math.max(0, Math.min(100, humidity));
+
   return (
-    <section className={`metric-card ${tone}`}>
-      <div className="metric-label">{label}</div>
-      <div className="metric-value">{value}</div>
-      <div className="metric-detail">{detail}</div>
+    <section className="status-card">
+      <div className="status-metrics">
+        <div className="status-metric temp">
+          <div className="status-value">
+            {displayTemp === null ? "--" : `${formatNumber(displayTemp)}°${tempUnit}`}
+          </div>
+          <div className="status-label">Temperature</div>
+        </div>
+        <div className="status-divider" />
+        <div className="status-metric heat">
+          <div className="status-value">
+            {displayHeat === null ? "--" : `${formatNumber(displayHeat)}°${tempUnit}`}
+          </div>
+          <div className="status-label">Heat Index</div>
+        </div>
+        <div className="status-divider" />
+        <div className="status-metric humidity">
+          <div className="status-value">
+            {humidity === null ? "--" : `${formatNumber(humidity)}%`}
+          </div>
+          <div className="status-label">Humidity</div>
+        </div>
+      </div>
+      <div className="comfort-gauge">
+        <div className="comfort-bar" />
+        {markerPct !== null ? (
+          <div className="comfort-marker" style={{ left: `${markerPct}%` }} aria-hidden="true" />
+        ) : null}
+        <div className="comfort-labels">
+          <span className="comfort-dry">Dry</span>
+          <span className="comfort-comfort">Comfort</span>
+          <span className="comfort-wet">Wet</span>
+        </div>
+      </div>
     </section>
   );
 }
@@ -515,14 +542,20 @@ export default function Page() {
   }, [device, rangeHours, readings]);
 
   const latest = filtered[0];
-  const previous = filtered[1];
-  const currentTemp = latest ? (useFahrenheit ? toFahrenheit(latest.temperature) : latest.temperature) : null;
-  const previousTemp = previous ? (useFahrenheit ? toFahrenheit(previous.temperature) : previous.temperature) : undefined;
-  const tempDelta = currentTemp === null ? null : delta(currentTemp, previousTemp);
-  const humidityDelta = latest ? delta(latest.humidity, previous?.humidity) : null;
-  const avgTempC = average(filtered.map((reading) => reading.temperature));
-  const avgHumidity = average(filtered.map((reading) => reading.humidity));
   const tempUnit = useFahrenheit ? "F" : "C";
+
+  // Max/Min for each chart header. Computed in the displayed unit so the
+  // labels match what the user sees in the chart.
+  const tempStats = useMemo(() => {
+    if (!filtered.length) return null;
+    const values = filtered.map((r) => (useFahrenheit ? toFahrenheit(r.temperature) : r.temperature));
+    return { min: Math.min(...values), max: Math.max(...values) };
+  }, [filtered, useFahrenheit]);
+  const humStats = useMemo(() => {
+    if (!filtered.length) return null;
+    const values = filtered.map((r) => r.humidity);
+    return { min: Math.min(...values), max: Math.max(...values) };
+  }, [filtered]);
 
   // Newest reading for the selected device, ignoring the time-range filter, so
   // staleness is detected even when the chosen range hides an offline device.
@@ -602,86 +635,50 @@ export default function Page() {
 
       {error ? <div className="error-banner">{error}</div> : null}
 
-      <section className="metrics">
-        <MetricCard
-          label="Temperature"
-          value={currentTemp === null ? "--" : `${formatNumber(currentTemp)}°${tempUnit}`}
-          detail={tempDelta === null ? "No prior reading" : `${tempDelta >= 0 ? "+" : ""}${formatNumber(tempDelta)}°${tempUnit}`}
-          tone="temp"
-        />
-        <MetricCard
-          label="Humidity"
-          value={latest ? `${formatNumber(latest.humidity)}%` : "--"}
-          detail={humidityDelta === null ? "No prior reading" : `${humidityDelta >= 0 ? "+" : ""}${formatNumber(humidityDelta)}%`}
-          tone="humidity"
-        />
-        <MetricCard
-          label="Average Temperature"
-          value={avgTempC === null ? "--" : `${formatNumber(useFahrenheit ? toFahrenheit(avgTempC) : avgTempC)}°${tempUnit}`}
-          detail={
-            data?.ok && data.stride > 1
-              ? `${filtered.length} pts (every ${data.stride}th)`
-              : `${filtered.length} readings`
-          }
-          tone="neutral"
-        />
-        <MetricCard
-          label="Average Humidity"
-          value={avgHumidity === null ? "--" : `${formatNumber(avgHumidity)}%`}
-          detail={data?.ok ? `${data.rowsLoaded} sheet rows` : "Sheet unavailable"}
-          tone="neutral"
+      <StatusCard
+        currentTempC={latest ? latest.temperature : null}
+        humidity={latest ? latest.humidity : null}
+        useFahrenheit={useFahrenheit}
+      />
+
+      <section className="panel chart-panel" style={{ marginTop: 16 }}>
+        <div className="panel-header">
+          <h2>Temperature (°{tempUnit})</h2>
+          <span>
+            {tempStats
+              ? `Max: ${formatNumber(tempStats.max)}°${tempUnit}   Min: ${formatNumber(tempStats.min)}°${tempUnit}`
+              : loading
+                ? "Loading"
+                : "--"}
+          </span>
+        </div>
+        <MetricChart
+          metric="temperature"
+          readings={filtered}
+          useFahrenheit={useFahrenheit}
+          timezone={timezone}
+          viewKey={`${rangeHours ?? "all"}|${device}`}
         />
       </section>
 
-      <section className="main-grid">
-        <section className="panel chart-panel">
-          <div className="panel-header">
-            <h2>Trend</h2>
-            <span>
-              {loading
+      <section className="panel chart-panel" style={{ marginTop: 16 }}>
+        <div className="panel-header">
+          <h2>Humidity (%)</h2>
+          <span>
+            {humStats
+              ? `Max: ${formatNumber(humStats.max)}%   Min: ${formatNumber(humStats.min)}%`
+              : loading
                 ? "Loading"
-                : data?.ok && data.stride > 1
-                  ? `${filtered.length} pts (every ${data.stride}th)`
-                  : `${filtered.length} readings`}
-            </span>
-          </div>
-          <TrendChart
-            readings={filtered}
-            useFahrenheit={useFahrenheit}
-            timezone={timezone}
-            viewKey={`${rangeHours ?? "all"}|${device}`}
-          />
-        </section>
-
-        <section className="panel table-panel">
-          <div className="panel-header">
-            <h2>Recent Readings</h2>
-            <span>{data?.ok ? data.sheetTitle : "Google Sheets"}</span>
-          </div>
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>Device</th>
-                  <th>Temp</th>
-                  <th>Humidity</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.slice(0, 12).map((reading) => (
-                  <tr key={reading.id}>
-                    <td>{formatTime(reading, timezone)}</td>
-                    <td>{reading.deviceId}</td>
-                    <td>{formatNumber(useFahrenheit ? toFahrenheit(reading.temperature) : reading.temperature)}°{tempUnit}</td>
-                    <td>{formatNumber(reading.humidity)}%</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {!filtered.length ? <div className="empty-panel">No readings match the selected filters.</div> : null}
-          </div>
-        </section>
+                : "--"}
+          </span>
+        </div>
+        <MetricChart
+          metric="humidity"
+          readings={filtered}
+          useFahrenheit={useFahrenheit}
+          timezone={timezone}
+          viewKey={`${rangeHours ?? "all"}|${device}`}
+        />
       </section>
 
       <section className="panel chart-panel" style={{ marginTop: 16 }}>
@@ -695,6 +692,42 @@ export default function Page() {
           timezone={timezone}
           viewKey={`${rangeHours ?? "all"}|${device}`}
         />
+      </section>
+
+      <section className="panel table-panel" style={{ marginTop: 16 }}>
+        <div className="panel-header">
+          <h2>Recent Readings</h2>
+          <span>
+            {data?.ok && data.stride > 1
+              ? `${data.sheetTitle} · every ${data.stride}th`
+              : data?.ok
+                ? data.sheetTitle
+                : "Google Sheets"}
+          </span>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Device</th>
+                <th>Temp</th>
+                <th>Humidity</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.slice(0, 12).map((reading) => (
+                <tr key={reading.id}>
+                  <td>{formatTime(reading, timezone)}</td>
+                  <td>{reading.deviceId}</td>
+                  <td>{formatNumber(useFahrenheit ? toFahrenheit(reading.temperature) : reading.temperature)}°{tempUnit}</td>
+                  <td>{formatNumber(reading.humidity)}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {!filtered.length ? <div className="empty-panel">No readings match the selected filters.</div> : null}
+        </div>
       </section>
     </main>
   );

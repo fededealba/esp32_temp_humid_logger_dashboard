@@ -311,6 +311,135 @@ function TrendChart({
   );
 }
 
+function ScatterChart({
+  readings,
+  useFahrenheit,
+  timezone,
+  viewKey,
+}: {
+  readings: Reading[];
+  useFahrenheit: boolean;
+  timezone: string;
+  viewKey: string;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // Drop rows without timestamps so the time-colormap stays meaningful.
+  const points = useMemo(
+    () => readings.filter((r) => r.timestampMs != null),
+    [readings],
+  );
+
+  const hasEnough = points.length >= 2;
+
+  useEffect(() => {
+    if (!containerRef.current || !hasEnough) return;
+
+    let cancelled = false;
+    const tempUnit = useFahrenheit ? "°F" : "°C";
+
+    const temps = points.map((r) => (useFahrenheit ? toFahrenheit(r.temperature) : r.temperature));
+    const hums = points.map((r) => r.humidity);
+    const times = points.map((r) => r.timestampMs as number);
+
+    const tempMin = Math.min(...temps) - 1;
+    const tempMax = Math.max(...temps) + 1;
+    const humMin = Math.max(0, Math.min(...hums) - 5);
+    const humMax = Math.min(100, Math.max(...hums) + 5);
+
+    const data: Data[] = [
+      {
+        type: "scatter",
+        mode: "markers",
+        x: hums,
+        y: temps,
+        marker: {
+          size: 6,
+          color: times,
+          colorscale: "Viridis",
+          showscale: true,
+          colorbar: {
+            title: { text: "Time", font: { color: "#607080" } },
+            tickfont: { color: "#607080" },
+            tickmode: "array",
+            tickvals: [times[0], times[times.length - 1]],
+            ticktext: [
+              zonedDateString(times[0], timezone).slice(0, 16),
+              zonedDateString(times[times.length - 1], timezone).slice(0, 16),
+            ],
+            thickness: 12,
+          },
+          line: { width: 0 },
+        },
+        customdata: times.map((t) => zonedDateString(t, timezone)),
+        hovertemplate: `%{x:.1f}%% RH, %{y:.1f}${tempUnit}<br>%{customdata}<extra></extra>`,
+      },
+    ];
+
+    const layout: Partial<Layout> = {
+      autosize: true,
+      height: 460,
+      uirevision: `${useFahrenheit ? "f" : "c"}|${timezone}|${viewKey}`,
+      margin: { l: 56, r: 24, t: 16, b: 48 },
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+      font: { family: "Inter, ui-sans-serif, system-ui, sans-serif", size: 12, color: "#607080" },
+      hovermode: "closest",
+      hoverlabel: { bgcolor: "#ffffff", bordercolor: "#d8e0e6", font: { color: "#182027" } },
+      xaxis: {
+        title: { text: "Humidity (%)", font: { color: "#087ea4" } },
+        range: [humMin, humMax],
+        gridcolor: "#eef2f4",
+        linecolor: "#b8c3cc",
+        tickcolor: "#b8c3cc",
+        zeroline: false,
+      },
+      yaxis: {
+        title: { text: `Temperature (${tempUnit})`, font: { color: "#c2410c" } },
+        range: [tempMin, tempMax],
+        gridcolor: "#eef2f4",
+        linecolor: "#b8c3cc",
+        tickcolor: "#b8c3cc",
+        zeroline: false,
+      },
+    };
+
+    const config: Partial<Config> = {
+      responsive: true,
+      displaylogo: false,
+      scrollZoom: false,
+      modeBarButtonsToRemove: ["lasso2d", "select2d", "autoScale2d", "toggleSpikelines"],
+    };
+
+    loadPlotly().then((Plotly) => {
+      if (cancelled || !containerRef.current) return;
+      Plotly.react(containerRef.current, data, layout, config);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [points, hasEnough, useFahrenheit, timezone, viewKey]);
+
+  useEffect(() => {
+    const element = containerRef.current;
+    return () => {
+      if (element && plotlyPromise) {
+        plotlyPromise.then((Plotly) => Plotly.purge(element));
+      }
+    };
+  }, []);
+
+  return (
+    <div className="chart-shell">
+      <div ref={containerRef} style={{ minHeight: 460, display: hasEnough ? "block" : "none" }} />
+      {hasEnough ? null : (
+        <div className="empty-panel">Waiting for enough timestamped readings.</div>
+      )}
+    </div>
+  );
+}
+
 function MetricCard({
   label,
   value,
@@ -553,6 +682,19 @@ export default function Page() {
             {!filtered.length ? <div className="empty-panel">No readings match the selected filters.</div> : null}
           </div>
         </section>
+      </section>
+
+      <section className="panel chart-panel" style={{ marginTop: 16 }}>
+        <div className="panel-header">
+          <h2>Temperature vs Humidity</h2>
+          <span>{loading ? "Loading" : `${filtered.length} points`}</span>
+        </div>
+        <ScatterChart
+          readings={filtered}
+          useFahrenheit={useFahrenheit}
+          timezone={timezone}
+          viewKey={`${rangeHours ?? "all"}|${device}`}
+        />
       </section>
     </main>
   );

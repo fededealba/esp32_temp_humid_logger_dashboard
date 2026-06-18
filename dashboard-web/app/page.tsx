@@ -308,6 +308,18 @@ function ScatterChart({
   viewKey: string;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const [isNarrow, setIsNarrow] = useState(false);
+
+  // Track the phone breakpoint so the colorbar moves out of the way of the
+  // plot area instead of squeezing it on narrow screens.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(max-width: 680px)");
+    const update = () => setIsNarrow(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
 
   // Drop rows without timestamps so the time-colormap stays meaningful.
   const points = useMemo(
@@ -332,6 +344,11 @@ function ScatterChart({
     const humMin = Math.max(0, Math.min(...hums) - 5);
     const humMax = Math.min(100, Math.max(...hums) + 5);
 
+    const shortDate = (t: number) =>
+      new Intl.DateTimeFormat("en-US", { timeZone: timezone, month: "short", day: "2-digit" })
+        .format(new Date(t));
+    const fullDate = (t: number) => zonedDateString(t, timezone).slice(0, 16);
+
     const data: Data[] = [
       {
         type: "scatter",
@@ -343,17 +360,28 @@ function ScatterChart({
           color: times,
           colorscale: "Viridis",
           showscale: true,
-          colorbar: {
-            title: { text: "Time", font: { color: "#607080" } },
-            tickfont: { color: "#607080" },
-            tickmode: "array",
-            tickvals: [times[0], times[times.length - 1]],
-            ticktext: [
-              zonedDateString(times[0], timezone).slice(0, 16),
-              zonedDateString(times[times.length - 1], timezone).slice(0, 16),
-            ],
-            thickness: 12,
-          },
+          colorbar: isNarrow
+            ? {
+                orientation: "h",
+                x: 0.5,
+                xanchor: "center",
+                y: -0.22,
+                yanchor: "top",
+                len: 0.8,
+                thickness: 8,
+                tickfont: { color: "#607080", size: 11 },
+                tickmode: "array",
+                tickvals: [times[0], times[times.length - 1]],
+                ticktext: [shortDate(times[0]), shortDate(times[times.length - 1])],
+              }
+            : {
+                title: { text: "Time", font: { color: "#607080" } },
+                tickfont: { color: "#607080" },
+                tickmode: "array",
+                tickvals: [times[0], times[times.length - 1]],
+                ticktext: [fullDate(times[0]), fullDate(times[times.length - 1])],
+                thickness: 12,
+              },
           line: { width: 0 },
         },
         customdata: times.map((t) => zonedDateString(t, timezone)),
@@ -363,9 +391,11 @@ function ScatterChart({
 
     const layout: Partial<Layout> = {
       autosize: true,
-      height: 460,
+      height: isNarrow ? 380 : 460,
       uirevision: `${useFahrenheit ? "f" : "c"}|${timezone}|${viewKey}`,
-      margin: { l: 56, r: 24, t: 16, b: 48 },
+      margin: isNarrow
+        ? { l: 44, r: 12, t: 12, b: 70 }
+        : { l: 56, r: 24, t: 16, b: 48 },
       paper_bgcolor: "rgba(0,0,0,0)",
       plot_bgcolor: "rgba(0,0,0,0)",
       font: { family: "Inter, ui-sans-serif, system-ui, sans-serif", size: 12, color: "#607080" },
@@ -404,7 +434,7 @@ function ScatterChart({
     return () => {
       cancelled = true;
     };
-  }, [points, hasEnough, useFahrenheit, timezone, viewKey]);
+  }, [points, hasEnough, useFahrenheit, timezone, viewKey, isNarrow]);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -417,7 +447,10 @@ function ScatterChart({
 
   return (
     <div className="chart-shell">
-      <div ref={containerRef} style={{ minHeight: 460, display: hasEnough ? "block" : "none" }} />
+      <div
+        ref={containerRef}
+        style={{ minHeight: isNarrow ? 380 : 460, display: hasEnough ? "block" : "none" }}
+      />
       {hasEnough ? null : (
         <div className="empty-panel">Waiting for enough timestamped readings.</div>
       )}

@@ -142,15 +142,24 @@ function MetricChart({
   useFahrenheit,
   timezone,
   viewKey,
+  xAxisRange,
+  onXRangeChange,
 }: {
   readings: Reading[];
   metric: "temperature" | "humidity";
   useFahrenheit: boolean;
   timezone: string;
   viewKey: string;
+  xAxisRange?: [string, string] | null;
+  onXRangeChange?: (range: [string, string] | null) => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const isTemp = metric === "temperature";
+  // Tracks the last range we either sent to the parent or applied from it,
+  // so we can break the relayout feedback loop between the two charts.
+  const lastAppliedRange = useRef<string | null>(null);
+  const onXRangeChangeRef = useRef(onXRangeChange);
+  useEffect(() => { onXRangeChangeRef.current = onXRangeChange; });
 
   const chartReadings = useMemo(
     () =>
@@ -270,12 +279,57 @@ function MetricChart({
     loadPlotly().then((Plotly) => {
       if (cancelled || !containerRef.current) return;
       Plotly.react(containerRef.current, data, layout, config);
+
+      // Attach x-axis sync listener, replacing any stale one from a prior render.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const plotlyEl = containerRef.current as unknown as any;
+      plotlyEl.removeAllListeners("plotly_relayout");
+      plotlyEl.on("plotly_relayout", (eventData: Record<string, unknown>) => {
+        if (eventData["xaxis.range[0]"] !== undefined) {
+          const range: [string, string] = [
+            String(eventData["xaxis.range[0]"]),
+            String(eventData["xaxis.range[1]"]),
+          ];
+          const rangeStr = JSON.stringify(range);
+          if (rangeStr !== lastAppliedRange.current) {
+            lastAppliedRange.current = rangeStr;
+            onXRangeChangeRef.current?.(range);
+          }
+        } else if (eventData["xaxis.autorange"] === true) {
+          if (lastAppliedRange.current !== null) {
+            lastAppliedRange.current = null;
+            onXRangeChangeRef.current?.(null);
+          }
+        }
+      });
     });
 
     return () => {
       cancelled = true;
     };
   }, [chartReadings, hasEnough, isTemp, useFahrenheit, timezone, viewKey]);
+
+  // Apply an x-axis range received from the sibling chart.
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const rangeStr = xAxisRange ? JSON.stringify(xAxisRange) : null;
+    if (rangeStr === lastAppliedRange.current) return;
+    lastAppliedRange.current = rangeStr;
+    loadPlotly().then((Plotly) => {
+      if (!containerRef.current) return;
+      if (xAxisRange) {
+        Plotly.relayout(containerRef.current, {
+          "xaxis.range[0]": xAxisRange[0],
+          "xaxis.range[1]": xAxisRange[1],
+          "xaxis.autorange": false,
+        } as unknown as Partial<Layout>);
+      } else {
+        Plotly.relayout(containerRef.current, {
+          "xaxis.autorange": true,
+        } as unknown as Partial<Layout>);
+      }
+    });
+  }, [xAxisRange]);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -529,6 +583,18 @@ export default function Page() {
   const [useFahrenheit, setUseFahrenheit] = useState(false);
   const [timezone, setTimezone] = useState(process.env.NEXT_PUBLIC_DASHBOARD_TIMEZONE || "Europe/Paris");
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [sharedXRange, setSharedXRange] = useState<[string, string] | null>(null);
+
+  const handleXRangeChange = useCallback((range: [string, string] | null) => {
+    setSharedXRange(range);
+  }, []);
+
+  const viewKey = `${rangeHours ?? "all"}|${device}`;
+
+  // Reset the shared zoom whenever the data window or timezone changes.
+  useEffect(() => {
+    setSharedXRange(null);
+  }, [viewKey, timezone]);
 
   // The server windows + downsamples based on `range_hours`, so the payload
   // size scales with the selected range instead of always being 5000 rows.
@@ -690,7 +756,9 @@ export default function Page() {
           readings={filtered}
           useFahrenheit={useFahrenheit}
           timezone={timezone}
-          viewKey={`${rangeHours ?? "all"}|${device}`}
+          viewKey={viewKey}
+          xAxisRange={sharedXRange}
+          onXRangeChange={handleXRangeChange}
         />
       </section>
 
@@ -710,7 +778,9 @@ export default function Page() {
           readings={filtered}
           useFahrenheit={useFahrenheit}
           timezone={timezone}
-          viewKey={`${rangeHours ?? "all"}|${device}`}
+          viewKey={viewKey}
+          xAxisRange={sharedXRange}
+          onXRangeChange={handleXRangeChange}
         />
       </section>
 
@@ -723,7 +793,7 @@ export default function Page() {
           readings={filtered}
           useFahrenheit={useFahrenheit}
           timezone={timezone}
-          viewKey={`${rangeHours ?? "all"}|${device}`}
+          viewKey={viewKey}
         />
       </section>
 

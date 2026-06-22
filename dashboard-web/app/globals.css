@@ -14,6 +14,24 @@
   --shadow: 0 1px 2px rgba(24, 32, 39, 0.08), 0 10px 30px rgba(24, 32, 39, 0.06);
 }
 
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #0f1419;
+    --surface: #19232e;
+    --surface-strong: #1f2d3a;
+    --text: #e2e8ef;
+    --muted: #7a8fa3;
+    --line: #2a3a4a;
+    --temp: #f97316;
+    --temp-soft: #2d1608;
+    --humidity: #38bdf8;
+    --humidity-soft: #07233a;
+    --green: #34d399;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(0, 0, 0, 0.3);
+  }
+}
+
 * {
   box-sizing: border-box;
 }
@@ -288,6 +306,32 @@ td:nth-child(4) {
   border: 1px solid #f2b6a4;
   background: #fff1ed;
   color: #9f2f16;
+}
+
+@media (prefers-color-scheme: dark) {
+  .status-metric.heat .status-value {
+    color: #fbbf24;
+  }
+
+  .comfort-dry {
+    color: #f87171;
+  }
+
+  .warning-banner {
+    border-color: #7a5e1a;
+    background: #2a1f08;
+    color: #d4a840;
+  }
+
+  .error-banner {
+    border-color: #7a2a1a;
+    background: #2a0f0a;
+    color: #f08070;
+  }
+
+  .icon-button {
+    box-shadow: none;
+  }
 }
 
 @media (max-width: 1080px) {

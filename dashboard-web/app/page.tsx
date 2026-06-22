@@ -101,6 +101,20 @@ function formatTime(reading: Reading, timezone: string) {
   }).format(new Date(reading.timestampMs));
 }
 
+function useDarkMode(): boolean {
+  const [isDark, setIsDark] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches,
+  );
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const update = () => setIsDark(mq.matches);
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+  return isDark;
+}
+
 type PlotlyApi = typeof import("plotly.js");
 
 let plotlyPromise: Promise<PlotlyApi> | null = null;
@@ -155,6 +169,7 @@ function MetricChart({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const isTemp = metric === "temperature";
+  const isDark = useDarkMode();
   // Tracks the last range we either sent to the parent or applied from it,
   // so we can break the relayout feedback loop between the two charts.
   const lastAppliedRange = useRef<string | null>(null);
@@ -224,8 +239,18 @@ function MetricChart({
         : Math.min(100, Math.max(...validY) + 5)
       : 100;
 
-    const lineColor = isTemp ? "#c2410c" : "#087ea4";
-    const fillColor = isTemp ? "rgba(194, 65, 12, 0.12)" : "rgba(8, 126, 164, 0.12)";
+    const lineColor = isDark
+      ? isTemp ? "#f97316" : "#38bdf8"
+      : isTemp ? "#c2410c" : "#087ea4";
+    const fillColor = isDark
+      ? isTemp ? "rgba(249, 115, 22, 0.18)" : "rgba(56, 189, 248, 0.18)"
+      : isTemp ? "rgba(194, 65, 12, 0.12)" : "rgba(8, 126, 164, 0.12)";
+    const gridColor = isDark ? "#2a3a4a" : "#eef2f4";
+    const axisColor = isDark ? "#3a4f63" : "#b8c3cc";
+    const fontColor = isDark ? "#7a8fa3" : "#607080";
+    const hoverBg = isDark ? "#19232e" : "#ffffff";
+    const hoverBorder = isDark ? "#2a3a4a" : "#d8e0e6";
+    const hoverFont = isDark ? "#e2e8ef" : "#182027";
     const hoverFmt = isTemp ? `%{y:.1f}${tempUnit}<extra></extra>` : "%{y:.1f}%<extra></extra>";
 
     const data: Data[] = [
@@ -249,22 +274,22 @@ function MetricChart({
       margin: { l: 56, r: 24, t: 12, b: 44 },
       paper_bgcolor: "rgba(0,0,0,0)",
       plot_bgcolor: "rgba(0,0,0,0)",
-      font: { family: "Inter, ui-sans-serif, system-ui, sans-serif", size: 12, color: "#607080" },
+      font: { family: "Inter, ui-sans-serif, system-ui, sans-serif", size: 12, color: fontColor },
       hovermode: "x unified",
-      hoverlabel: { bgcolor: "#ffffff", bordercolor: "#d8e0e6", font: { color: "#182027" } },
+      hoverlabel: { bgcolor: hoverBg, bordercolor: hoverBorder, font: { color: hoverFont } },
       showlegend: false,
       xaxis: {
         type: "date",
         hoverformat: "%b %d, %H:%M",
-        gridcolor: "#eef2f4",
-        linecolor: "#b8c3cc",
-        tickcolor: "#b8c3cc",
+        gridcolor: gridColor,
+        linecolor: axisColor,
+        tickcolor: axisColor,
         zeroline: false,
       },
       yaxis: {
         tickfont: { color: lineColor },
         range: [yMin, yMax],
-        gridcolor: "#eef2f4",
+        gridcolor: gridColor,
         zeroline: false,
       },
     };
@@ -307,7 +332,7 @@ function MetricChart({
     return () => {
       cancelled = true;
     };
-  }, [chartReadings, hasEnough, isTemp, useFahrenheit, timezone, viewKey]);
+  }, [chartReadings, hasEnough, isDark, isTemp, useFahrenheit, timezone, viewKey]);
 
   // Apply an x-axis range received from the sibling chart.
   useEffect(() => {
@@ -382,6 +407,7 @@ function ScatterChart({
   );
 
   const hasEnough = points.length >= 2;
+  const isDark = useDarkMode();
 
   useEffect(() => {
     if (!containerRef.current || !hasEnough) return;
@@ -397,6 +423,15 @@ function ScatterChart({
     const tempMax = Math.max(...temps) + 1;
     const humMin = Math.max(0, Math.min(...hums) - 5);
     const humMax = Math.min(100, Math.max(...hums) + 5);
+
+    const fontColor = isDark ? "#7a8fa3" : "#607080";
+    const gridColor = isDark ? "#2a3a4a" : "#eef2f4";
+    const axisColor = isDark ? "#3a4f63" : "#b8c3cc";
+    const hoverBg = isDark ? "#19232e" : "#ffffff";
+    const hoverBorder = isDark ? "#2a3a4a" : "#d8e0e6";
+    const hoverFont = isDark ? "#e2e8ef" : "#182027";
+    const tempAxisColor = isDark ? "#f97316" : "#c2410c";
+    const humAxisColor = isDark ? "#38bdf8" : "#087ea4";
 
     const shortDate = (t: number) =>
       new Intl.DateTimeFormat("en-US", { timeZone: timezone, month: "short", day: "2-digit" })
@@ -423,14 +458,14 @@ function ScatterChart({
                 yanchor: "top",
                 len: 0.8,
                 thickness: 8,
-                tickfont: { color: "#607080", size: 11 },
+                tickfont: { color: fontColor, size: 11 },
                 tickmode: "array",
                 tickvals: [times[0], times[times.length - 1]],
                 ticktext: [shortDate(times[0]), shortDate(times[times.length - 1])],
               }
             : {
-                title: { text: "Time", font: { color: "#607080" } },
-                tickfont: { color: "#607080" },
+                title: { text: "Time", font: { color: fontColor } },
+                tickfont: { color: fontColor },
                 tickmode: "array",
                 tickvals: [times[0], times[times.length - 1]],
                 ticktext: [fullDate(times[0]), fullDate(times[times.length - 1])],
@@ -452,23 +487,23 @@ function ScatterChart({
         : { l: 56, r: 24, t: 16, b: 48 },
       paper_bgcolor: "rgba(0,0,0,0)",
       plot_bgcolor: "rgba(0,0,0,0)",
-      font: { family: "Inter, ui-sans-serif, system-ui, sans-serif", size: 12, color: "#607080" },
+      font: { family: "Inter, ui-sans-serif, system-ui, sans-serif", size: 12, color: fontColor },
       hovermode: "closest",
-      hoverlabel: { bgcolor: "#ffffff", bordercolor: "#d8e0e6", font: { color: "#182027" } },
+      hoverlabel: { bgcolor: hoverBg, bordercolor: hoverBorder, font: { color: hoverFont } },
       xaxis: {
-        title: { text: "Humidity (%)", font: { color: "#087ea4" } },
+        title: { text: "Humidity (%)", font: { color: humAxisColor } },
         range: [humMin, humMax],
-        gridcolor: "#eef2f4",
-        linecolor: "#b8c3cc",
-        tickcolor: "#b8c3cc",
+        gridcolor: gridColor,
+        linecolor: axisColor,
+        tickcolor: axisColor,
         zeroline: false,
       },
       yaxis: {
-        title: { text: `Temperature (${tempUnit})`, font: { color: "#c2410c" } },
+        title: { text: `Temperature (${tempUnit})`, font: { color: tempAxisColor } },
         range: [tempMin, tempMax],
-        gridcolor: "#eef2f4",
-        linecolor: "#b8c3cc",
-        tickcolor: "#b8c3cc",
+        gridcolor: gridColor,
+        linecolor: axisColor,
+        tickcolor: axisColor,
         zeroline: false,
       },
     };
@@ -488,7 +523,7 @@ function ScatterChart({
     return () => {
       cancelled = true;
     };
-  }, [points, hasEnough, useFahrenheit, timezone, viewKey, isNarrow]);
+  }, [points, hasEnough, isDark, useFahrenheit, timezone, viewKey, isNarrow]);
 
   useEffect(() => {
     const element = containerRef.current;

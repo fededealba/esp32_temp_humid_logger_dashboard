@@ -380,11 +380,13 @@ function ScatterChart({
   useFahrenheit,
   timezone,
   viewKey,
+  xAxisRange,
 }: {
   readings: Reading[];
   useFahrenheit: boolean;
   timezone: string;
   viewKey: string;
+  xAxisRange?: [string, string] | null;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [isNarrow, setIsNarrow] = useState(false);
@@ -400,11 +402,15 @@ function ScatterChart({
     return () => mq.removeEventListener("change", update);
   }, []);
 
-  // Drop rows without timestamps so the time-colormap stays meaningful.
-  const points = useMemo(
-    () => readings.filter((r) => r.timestampMs != null),
-    [readings],
-  );
+  // Drop rows without timestamps; also filter to the zoomed time window when set.
+  const points = useMemo(() => {
+    return readings.filter((r) => {
+      if (r.timestampMs == null) return false;
+      if (!xAxisRange) return true;
+      const s = zonedDateString(r.timestampMs, timezone);
+      return s >= xAxisRange[0] && s <= xAxisRange[1];
+    });
+  }, [readings, xAxisRange, timezone]);
 
   const hasEnough = points.length >= 2;
   const isDark = useDarkMode();
@@ -829,6 +835,7 @@ export default function Page() {
           useFahrenheit={useFahrenheit}
           timezone={timezone}
           viewKey={viewKey}
+          xAxisRange={sharedXRange}
         />
       </section>
 

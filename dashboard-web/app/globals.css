@@ -384,6 +384,47 @@ td:nth-child(4) {
   white-space: nowrap;
 }
 
+.scatter-rates {
+  display: flex;
+  gap: 20px;
+  padding: 2px 12px 12px;
+  flex-wrap: wrap;
+}
+
+.scatter-rate {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rate-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.rate-arrow {
+  font-size: 11px;
+}
+
+.rate-value {
+  font-weight: 650;
+}
+
+.rate-unit {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.rate-temp {
+  color: var(--temp);
+}
+
+.rate-humidity {
+  color: var(--humidity);
+}
+
 @media (max-width: 1080px) {
   .controls {
     grid-template-columns: repeat(3, minmax(0, 1fr));

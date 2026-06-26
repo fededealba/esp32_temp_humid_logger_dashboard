@@ -390,6 +390,8 @@ function ScatterChart({
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [isNarrow, setIsNarrow] = useState(false);
+  const [animFrame, setAnimFrame] = useState<number | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
 
   // Track the phone breakpoint so the colorbar moves out of the way of the
   // plot area instead of squeezing it on narrow screens.
@@ -412,23 +414,55 @@ function ScatterChart({
     });
   }, [readings, xAxisRange, timezone]);
 
+  // Reset animation whenever the underlying points change.
+  useEffect(() => {
+    setAnimFrame(null);
+    setIsPlaying(false);
+  }, [points]);
+
+  // Advance the animation frame on a 50 ms interval (~20 fps).
+  useEffect(() => {
+    if (!isPlaying) return;
+    const step = Math.max(1, Math.ceil(points.length / 150));
+    const id = setInterval(() => {
+      setAnimFrame((prev) => {
+        const next = (prev ?? 0) + step;
+        if (next >= points.length) {
+          setIsPlaying(false);
+          return null; // snap to "show all" when finished
+        }
+        return next;
+      });
+    }, 50);
+    return () => clearInterval(id);
+  }, [isPlaying, points.length]);
+
   const hasEnough = points.length >= 2;
   const isDark = useDarkMode();
 
   useEffect(() => {
     if (!containerRef.current || !hasEnough) return;
 
+    // Slice to the current animation frame, or use all points when idle.
+    const display = animFrame === null ? points : points.slice(0, Math.max(2, animFrame));
+    if (display.length < 2) return;
+
     let cancelled = false;
     const tempUnit = useFahrenheit ? "°F" : "°C";
 
-    const temps = points.map((r) => (useFahrenheit ? toFahrenheit(r.temperature) : r.temperature));
-    const hums = points.map((r) => r.humidity);
-    const times = points.map((r) => r.timestampMs as number);
+    // Keep axis ranges fixed to the full dataset so the viewport doesn't jump.
+    const allTemps = points.map((r) => (useFahrenheit ? toFahrenheit(r.temperature) : r.temperature));
+    const allHums = points.map((r) => r.humidity);
+    const allTimes = points.map((r) => r.timestampMs as number);
 
-    const tempMin = Math.min(...temps) - 1;
-    const tempMax = Math.max(...temps) + 1;
-    const humMin = Math.max(0, Math.min(...hums) - 5);
-    const humMax = Math.min(100, Math.max(...hums) + 5);
+    const temps = display.map((r) => (useFahrenheit ? toFahrenheit(r.temperature) : r.temperature));
+    const hums = display.map((r) => r.humidity);
+    const times = display.map((r) => r.timestampMs as number);
+
+    const tempMin = Math.min(...allTemps) - 1;
+    const tempMax = Math.max(...allTemps) + 1;
+    const humMin = Math.max(0, Math.min(...allHums) - 5);
+    const humMax = Math.min(100, Math.max(...allHums) + 5);
 
     const fontColor = isDark ? "#7a8fa3" : "#607080";
     const gridColor = isDark ? "#2a3a4a" : "#eef2f4";
@@ -454,6 +488,8 @@ function ScatterChart({
           size: 6,
           color: times,
           colorscale: "Viridis",
+          cmin: allTimes[0],
+          cmax: allTimes[allTimes.length - 1],
           showscale: true,
           colorbar: isNarrow
             ? {
@@ -466,15 +502,15 @@ function ScatterChart({
                 thickness: 8,
                 tickfont: { color: fontColor, size: 11 },
                 tickmode: "array",
-                tickvals: [times[0], times[times.length - 1]],
-                ticktext: [shortDate(times[0]), shortDate(times[times.length - 1])],
+                tickvals: [allTimes[0], allTimes[allTimes.length - 1]],
+                ticktext: [shortDate(allTimes[0]), shortDate(allTimes[allTimes.length - 1])],
               }
             : {
                 title: { text: "Time", font: { color: fontColor } },
                 tickfont: { color: fontColor },
                 tickmode: "array",
-                tickvals: [times[0], times[times.length - 1]],
-                ticktext: [fullDate(times[0]), fullDate(times[times.length - 1])],
+                tickvals: [allTimes[0], allTimes[allTimes.length - 1]],
+                ticktext: [fullDate(allTimes[0]), fullDate(allTimes[allTimes.length - 1])],
                 thickness: 12,
               },
           line: { width: 0 },
@@ -529,7 +565,7 @@ function ScatterChart({
     return () => {
       cancelled = true;
     };
-  }, [points, hasEnough, isDark, useFahrenheit, timezone, viewKey, isNarrow]);
+  }, [points, hasEnough, isDark, useFahrenheit, timezone, viewKey, isNarrow, animFrame]);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -540,6 +576,22 @@ function ScatterChart({
     };
   }, []);
 
+  const handlePlayPause = useCallback(() => {
+    if (isPlaying) {
+      setIsPlaying(false);
+    } else {
+      if (animFrame === null) setAnimFrame(0); // start from beginning
+      setIsPlaying(true);
+    }
+  }, [isPlaying, animFrame]);
+
+  const handleReset = useCallback(() => {
+    setIsPlaying(false);
+    setAnimFrame(null);
+  }, []);
+
+  const progress = animFrame === null ? points.length : animFrame;
+
   return (
     <div className="chart-shell">
       <div
@@ -549,6 +601,37 @@ function ScatterChart({
       {hasEnough ? null : (
         <div className="empty-panel">Waiting for enough timestamped readings.</div>
       )}
+      {hasEnough ? (
+        <div className="scatter-controls">
+          <button
+            className="scatter-play-btn"
+            type="button"
+            onClick={handlePlayPause}
+            aria-label={isPlaying ? "Pause animation" : "Play animation"}
+          >
+            {isPlaying ? "⏸" : "▶"}
+          </button>
+          <div className="scatter-progress-track">
+            <div
+              className="scatter-progress-fill"
+              style={{ width: `${(progress / points.length) * 100}%` }}
+            />
+          </div>
+          <span className="scatter-progress-label">
+            {progress} / {points.length}
+          </span>
+          {animFrame !== null ? (
+            <button
+              className="scatter-reset-btn"
+              type="button"
+              onClick={handleReset}
+              aria-label="Reset animation"
+            >
+              ⟳
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

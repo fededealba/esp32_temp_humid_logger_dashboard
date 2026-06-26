@@ -115,6 +115,22 @@ function useDarkMode(): boolean {
   return isDark;
 }
 
+// Linear-regression slope of values over time, returned in units per minute.
+function ratePerMinute(timestamps: number[], values: number[]): number | null {
+  const n = timestamps.length;
+  if (n < 2) return null;
+  const t0 = timestamps[0];
+  const xs = timestamps.map((t) => (t - t0) / 60000);
+  const meanX = xs.reduce((a, b) => a + b, 0) / n;
+  const meanY = values.reduce((a, b) => a + b, 0) / n;
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) {
+    num += (xs[i] - meanX) * (values[i] - meanY);
+    den += (xs[i] - meanX) ** 2;
+  }
+  return den === 0 ? null : num / den;
+}
+
 type PlotlyApi = typeof import("plotly.js");
 
 let plotlyPromise: Promise<PlotlyApi> | null = null;
@@ -375,6 +391,30 @@ function MetricChart({
   );
 }
 
+function ScatterRate({
+  label,
+  value,
+  unit,
+  colorClass,
+}: {
+  label: string;
+  value: number | null;
+  unit: string;
+  colorClass: string;
+}) {
+  if (value === null) return null;
+  const arrow = value > 0.001 ? "▲" : value < -0.001 ? "▼" : "→";
+  const sign = value > 0 ? "+" : "";
+  return (
+    <span className={`scatter-rate ${colorClass}`}>
+      <span className="rate-label">{label}</span>
+      <span className="rate-arrow">{arrow}</span>
+      <span className="rate-value">{sign}{value.toFixed(3)}</span>
+      <span className="rate-unit">{unit}</span>
+    </span>
+  );
+}
+
 function ScatterChart({
   readings,
   useFahrenheit,
@@ -443,24 +483,44 @@ function ScatterChart({
   const hasEnough = points.length >= 2;
   const isDark = useDarkMode();
 
+  // Slice to the current animation frame, or use all points when idle.
+  const displayPoints = useMemo(
+    () => (animFrame === null ? points : points.slice(0, Math.max(2, animFrame))),
+    [points, animFrame],
+  );
+
+  const tempUnit = useFahrenheit ? "°F" : "°C";
+
+  const tempRate = useMemo(() => {
+    if (displayPoints.length < 2) return null;
+    return ratePerMinute(
+      displayPoints.map((r) => r.timestampMs as number),
+      displayPoints.map((r) => (useFahrenheit ? toFahrenheit(r.temperature) : r.temperature)),
+    );
+  }, [displayPoints, useFahrenheit]);
+
+  const humRate = useMemo(() => {
+    if (displayPoints.length < 2) return null;
+    return ratePerMinute(
+      displayPoints.map((r) => r.timestampMs as number),
+      displayPoints.map((r) => r.humidity),
+    );
+  }, [displayPoints]);
+
   useEffect(() => {
     if (!containerRef.current || !hasEnough) return;
-
-    // Slice to the current animation frame, or use all points when idle.
-    const display = animFrame === null ? points : points.slice(0, Math.max(2, animFrame));
-    if (display.length < 2) return;
+    if (displayPoints.length < 2) return;
 
     let cancelled = false;
-    const tempUnit = useFahrenheit ? "°F" : "°C";
 
     // Keep axis ranges fixed to the full dataset so the viewport doesn't jump.
     const allTemps = points.map((r) => (useFahrenheit ? toFahrenheit(r.temperature) : r.temperature));
     const allHums = points.map((r) => r.humidity);
     const allTimes = points.map((r) => r.timestampMs as number);
 
-    const temps = display.map((r) => (useFahrenheit ? toFahrenheit(r.temperature) : r.temperature));
-    const hums = display.map((r) => r.humidity);
-    const times = display.map((r) => r.timestampMs as number);
+    const temps = displayPoints.map((r) => (useFahrenheit ? toFahrenheit(r.temperature) : r.temperature));
+    const hums = displayPoints.map((r) => r.humidity);
+    const times = displayPoints.map((r) => r.timestampMs as number);
 
     const tempMin = Math.min(...allTemps) - 1;
     const tempMax = Math.max(...allTemps) + 1;
@@ -568,7 +628,7 @@ function ScatterChart({
     return () => {
       cancelled = true;
     };
-  }, [points, hasEnough, isDark, useFahrenheit, timezone, viewKey, isNarrow, animFrame]);
+  }, [displayPoints, points, hasEnough, isDark, useFahrenheit, timezone, viewKey, isNarrow]);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -605,6 +665,7 @@ function ScatterChart({
         <div className="empty-panel">Waiting for enough timestamped readings.</div>
       )}
       {hasEnough ? (
+        <>
         <div className="scatter-controls">
           <button
             className="scatter-play-btn"
@@ -634,6 +695,11 @@ function ScatterChart({
             </button>
           ) : null}
         </div>
+        <div className="scatter-rates">
+          <ScatterRate label="Temp" value={tempRate} unit={`°${tempUnit}/min`} colorClass="rate-temp" />
+          <ScatterRate label="Humidity" value={humRate} unit="%/min" colorClass="rate-humidity" />
+        </div>
+        </>
       ) : null}
     </div>
   );

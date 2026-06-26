@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.108.2",
     "google-auth-library": "10.6.2",
     "next": "16.2.6",
     "plotly.js-basic-dist-min": "^3.5.1",

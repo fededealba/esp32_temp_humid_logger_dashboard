@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { loadReadings } from "@/lib/sheets";
+import { loadReadings as loadFromSheets } from "@/lib/sheets";
+import { loadReadings as loadFromDb, isSupabaseConfigured } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,6 +36,9 @@ export async function GET(request: Request) {
     }
   }
 
+  // Use Supabase when configured; fall back to Google Sheets otherwise.
+  const loadReadings = isSupabaseConfigured() ? loadFromDb : loadFromSheets;
+
   try {
     const data = await loadReadings({ rangeHours, limit, maxPoints });
     return NextResponse.json(data, {
@@ -48,7 +52,7 @@ export async function GET(request: Request) {
     return NextResponse.json(
       {
         ok: false,
-        error: error instanceof Error ? error.message : "Unknown Google Sheets error",
+        error: error instanceof Error ? error.message : "Unknown error loading readings",
       },
       { status: 500 },
     );

@@ -405,13 +405,16 @@ function ScatterChart({
   }, []);
 
   // Drop rows without timestamps; also filter to the zoomed time window when set.
+  // Sort oldest-first so the animation plays in chronological order.
   const points = useMemo(() => {
-    return readings.filter((r) => {
-      if (r.timestampMs == null) return false;
-      if (!xAxisRange) return true;
-      const s = zonedDateString(r.timestampMs, timezone);
-      return s >= xAxisRange[0] && s <= xAxisRange[1];
-    });
+    return readings
+      .filter((r) => {
+        if (r.timestampMs == null) return false;
+        if (!xAxisRange) return true;
+        const s = zonedDateString(r.timestampMs, timezone);
+        return s >= xAxisRange[0] && s <= xAxisRange[1];
+      })
+      .sort((a, b) => (a.timestampMs ?? 0) - (b.timestampMs ?? 0));
   }, [readings, xAxisRange, timezone]);
 
   // Reset animation whenever the underlying points change.

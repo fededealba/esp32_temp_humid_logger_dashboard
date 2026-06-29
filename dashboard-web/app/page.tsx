@@ -48,6 +48,8 @@ const RANGES = [
   { label: "1h", hours: 1 },
   { label: "12h", hours: 12 },
   { label: "24h", hours: 24 },
+  { label: "48h", hours: 48 },
+  { label: "72h", hours: 72 },
   { label: "7d", hours: 168 },
   { label: "All", hours: null },
 ];

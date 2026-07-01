@@ -5,6 +5,7 @@
 #include <WiFiClientSecure.h>
 #include <DHT.h>
 #include <time.h>
+#include <string.h>
 #if __has_include(<ArduinoJson.h>)
 #include <ArduinoJson.h>
 #define HAVE_ARDUINOJSON 1
@@ -14,12 +15,14 @@
 
 // Secrets (optionally provided via secrets.h)
 #if __has_include("secrets.h")
-#include "secrets.h"  // should define WIFI_SSID, WIFI_PASSWORD, optional API_KEY
+#include "secrets.h"  // should define WIFI_SSID, WIFI_PASSWORD, optional API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 #else
 // Fallbacks (replace or create secrets.h)
 const char* WIFI_SSID = "YOUR_WIFI_SSID";
 const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 const char* API_KEY = nullptr;  // optional API key header
+const char* SUPABASE_URL = nullptr;             // e.g. https://xxxx.supabase.co ("" or nullptr disables)
+const char* SUPABASE_SERVICE_ROLE_KEY = nullptr;
 #endif
 
 // Google Forms submission URL (HTTPS)
@@ -59,6 +62,9 @@ String iso8601UTC(unsigned long epoch);
 String hhmmssUTC(unsigned long epoch);
 bool isPlausible(float humidity, float temperature);
 String buildJsonPayload(float humidity, float temperature, unsigned long epoch);
+String buildSupabaseJsonPayload(float humidity, float temperature, unsigned long epoch);
+bool postGoogleForms(float humidity, float temperature, unsigned long epoch);
+bool postSupabase(float humidity, float temperature, unsigned long epoch);
 unsigned long currentInterval();
 void onWiFiEvent(WiFiEvent_t event);
 
@@ -119,42 +125,27 @@ void loop() {
     String timestampIso = iso8601UTC(epoch);     // ISO-8601 Zulu
 
     // Print to Serial
-    Serial.println("Sending data to server...");
+    Serial.println("Sending data to server(s)...");
     Serial.print("Temp: "); Serial.print(temperature);
     Serial.print(" °C  |  Humidity: "); Serial.print(humidity);
     Serial.print(" %  |  Time: "); Serial.print(formattedTime);
     Serial.print(" | ISO: "); Serial.println(timestampIso);
-    Serial.print("Server URL: "); Serial.println(SERVER_URL);
     Serial.print("Device IP: "); Serial.println(WiFi.localIP());
 
-    // Send HTTPS POST
+    // Write to both destinations independently; either one succeeding is
+    // enough to reset the backoff, so a single flaky endpoint doesn't slow
+    // down delivery to the other.
+    bool sheetsOk = false;
+    bool supabaseOk = false;
     if (WiFi.status() == WL_CONNECTED) {
-      HTTPClient http;
-      WiFiClientSecure client;
-      client.setInsecure(); // For development - in production, use proper certificate validation
-      http.begin(client, SERVER_URL);
-      http.setTimeout(HTTP_TIMEOUT_MS);
-      http.addHeader("Content-Type", "application/x-www-form-urlencoded");
-      http.addHeader("User-Agent", "esp32-dht22-client/1.1");
-      http.addHeader("Connection", "close");
+      sheetsOk = postGoogleForms(humidity, temperature, epoch);
+      supabaseOk = postSupabase(humidity, temperature, epoch);
+    }
 
-      // Build form-encoded payload for Google Forms
-      String formData = buildFormPayload(humidity, temperature, epoch);
-
-      int httpResponseCode = http.POST(formData);
-      Serial.print("HTTP Response: ");
-      Serial.println(httpResponseCode);
-      if (httpResponseCode <= 0) {
-        Serial.print("HTTP error: ");
-        Serial.println(http.errorToString(httpResponseCode));
-      }
-      // Backoff handling: success resets, failure increases
-      if (httpResponseCode > 0 && httpResponseCode < 400) {
-        backoffExp = 0; // success
-      } else {
-        if (backoffExp < 6) backoffExp++; // up to 2^6 = 64x
-      }
-      http.end();
+    if (sheetsOk || supabaseOk) {
+      backoffExp = 0; // at least one destination got the reading
+    } else {
+      if (backoffExp < 6) backoffExp++; // up to 2^6 = 64x
     }
   }
 }
@@ -275,6 +266,60 @@ String buildJsonPayload(float humidity, float temperature, unsigned long epoch) 
   return out;
 }
 
+bool postGoogleForms(float humidity, float temperature, unsigned long epoch) {
+  HTTPClient http;
+  WiFiClientSecure client;
+  client.setInsecure(); // For development - in production, use proper certificate validation
+  http.begin(client, SERVER_URL);
+  http.setTimeout(HTTP_TIMEOUT_MS);
+  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+  http.addHeader("User-Agent", "esp32-dht22-client/1.1");
+  http.addHeader("Connection", "close");
+
+  String formData = buildFormPayload(humidity, temperature, epoch);
+  int code = http.POST(formData);
+  Serial.print("Google Forms HTTP response: ");
+  Serial.println(code);
+  if (code <= 0) {
+    Serial.print("Google Forms HTTP error: ");
+    Serial.println(http.errorToString(code));
+  }
+  http.end();
+  return code > 0 && code < 400;
+}
+
+bool postSupabase(float humidity, float temperature, unsigned long epoch) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY ||
+      strlen(SUPABASE_URL) == 0 || strlen(SUPABASE_SERVICE_ROLE_KEY) == 0) {
+    return false; // not configured; not an error, just a disabled channel
+  }
+
+  HTTPClient http;
+  WiFiClientSecure client;
+  client.setInsecure(); // For development - in production, use proper certificate validation
+  String url = String(SUPABASE_URL) + "/rest/v1/readings";
+  http.begin(client, url);
+  http.setTimeout(HTTP_TIMEOUT_MS);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("apikey", SUPABASE_SERVICE_ROLE_KEY);
+  http.addHeader("Authorization", String("Bearer ") + SUPABASE_SERVICE_ROLE_KEY);
+  http.addHeader("Prefer", "return=minimal");
+
+  String payload = buildSupabaseJsonPayload(humidity, temperature, epoch);
+  int code = http.POST(payload);
+  Serial.print("Supabase HTTP response: ");
+  Serial.println(code);
+  if (code <= 0) {
+    Serial.print("Supabase HTTP error: ");
+    Serial.println(http.errorToString(code));
+  } else if (code >= 400) {
+    Serial.print("Supabase error body: ");
+    Serial.println(http.getString());
+  }
+  http.end();
+  return code >= 200 && code < 300;
+}
+
 String buildFormPayload(float humidity, float temperature, unsigned long epoch) {
   // Google Forms field IDs:
   // Temperature: entry.2135755099
@@ -287,6 +332,32 @@ String buildFormPayload(float humidity, float temperature, unsigned long epoch) 
         "&entry.346799127=" + String(humidity, 2) +
         "&entry.1396898277=" + WiFi.macAddress() +
         "&entry.1586851294=" + iso8601UTC(epoch);
+  return out;
+}
+
+String buildSupabaseJsonPayload(float humidity, float temperature, unsigned long epoch) {
+  // `received_at` is left out on purpose: the table defaults it to the DB's
+  // own now() so it reflects when the row actually arrived, independent of
+  // this device's clock.
+  String out;
+#if HAVE_ARDUINOJSON
+  {
+    StaticJsonDocument<256> doc;
+    doc["device_id"] = WiFi.macAddress();
+    doc["temperature"] = roundf(temperature * 100.0f) / 100.0f;
+    doc["humidity"] = roundf(humidity * 100.0f) / 100.0f;
+    doc["device_ts"] = iso8601UTC(epoch);
+    serializeJson(doc, out);
+  }
+#else
+  out.reserve(160);
+  out = String("{") +
+        "\"device_id\": \"" + WiFi.macAddress() + "\"," +
+        " \"temperature\": " + String(temperature, 2) +
+        ", \"humidity\": " + String(humidity, 2) +
+        ", \"device_ts\": \"" + iso8601UTC(epoch) + "\"" +
+        "}";
+#endif
   return out;
 }
 

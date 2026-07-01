@@ -25,3 +25,43 @@ create index if not exists readings_received_at_idx
 -- dumped, rotate the service_role key in Project Settings -> API and
 -- reflash every device with the new one.
 alter table public.readings enable row level security;
+
+-- Server-side stride downsampling: given a target point count and an
+-- optional cutoff, returns evenly-spaced rows (always including the
+-- newest) instead of making the dashboard fetch the whole table and
+-- thin it out in JS. Keeps "all time" / large-range queries fast and
+-- payload-bounded no matter how big the table grows.
+--
+-- page_offset/page_limit are handled inside the function (not via
+-- PostgREST's Range header) because PostgREST does not paginate `setof`
+-- RPC results reliably — every page request silently returned the same
+-- first chunk when tested against Range headers instead.
+create or replace function public.readings_downsampled(
+  target_points integer default 2000,
+  cutoff timestamptz default null,
+  page_offset integer default 0,
+  page_limit integer default 1000
+)
+returns setof public.readings
+language sql
+stable
+as $$
+  with base as (
+    select
+      r.*,
+      row_number() over (order by r.received_at desc) - 1 as rn,
+      count(*) over () as total
+    from public.readings r
+    where cutoff is null or r.received_at >= cutoff
+  ),
+  sampled as (
+    select id, device_id, temperature, humidity, device_ts, received_at
+    from base
+    where total <= greatest(target_points, 1)
+       or mod(rn, greatest(ceil(total::numeric / greatest(target_points, 1))::int, 1)) = 0
+    order by received_at desc
+  )
+  select * from sampled
+  limit greatest(page_limit, 0)
+  offset greatest(page_offset, 0);
+$$;

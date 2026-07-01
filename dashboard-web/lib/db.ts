@@ -12,13 +12,10 @@ type SupabaseRow = {
 };
 
 const PAGE_SIZE = 1_000;
-// Sanity cap so a mistaken `limit` can't trigger unbounded pagination.
-// ~76k rows (the full history as of 2026-07) paginates in ~1.7s server-side,
-// well inside the route's 15s maxDuration; this leaves headroom for growth
-// (the device posts ~1440 rows/day) without silently truncating "all time"
-// history. Revisit with server-side (SQL-level) downsampling if the table
-// grows enough to approach the timeout.
-const MAX_ROWS = 200_000;
+// Only used by the bare `?limit=N` legacy path below, which is rare and
+// bounded by definition; the range/all paths downsample in Postgres instead
+// of paginating the whole table.
+const MAX_ROWS = 20_000;
 
 function getConfig(): { url: string; key: string } | null {
   const url = process.env.SUPABASE_URL;
@@ -48,17 +45,16 @@ function toReading(row: SupabaseRow): Reading {
   };
 }
 
-function downsampleByStride(
-  readings: Reading[],
-  maxPoints: number,
-): { rows: Reading[]; stride: number } {
-  if (readings.length <= maxPoints || maxPoints <= 0) {
-    return { rows: readings, stride: 1 };
-  }
-  const stride = Math.ceil(readings.length / maxPoints);
-  const rows: Reading[] = [];
-  for (let i = 0; i < readings.length; i += stride) rows.push(readings[i]);
-  return { rows, stride };
+// Newest first; rows without a resolvable timestamp fall to the back.
+// Re-sorting (rather than trusting query order) guards against
+// device_ts/received_at drift, mirroring sheets.ts.
+function sortNewestFirst(readings: Reading[]): Reading[] {
+  return [...readings].sort((a, b) => {
+    if (a.timestampMs !== null && b.timestampMs !== null) return b.timestampMs - a.timestampMs;
+    if (a.timestampMs !== null) return -1;
+    if (b.timestampMs !== null) return 1;
+    return b.id - a.id;
+  });
 }
 
 async function fetchPage(
@@ -84,6 +80,69 @@ async function fetchPage(
   return res.json() as Promise<SupabaseRow[]>;
 }
 
+async function fetchExactCount(
+  config: { url: string; key: string },
+  cutoffIso: string | null,
+): Promise<number> {
+  const params = new URLSearchParams({ select: "id", limit: "1" });
+  if (cutoffIso) params.append("received_at", `gte.${cutoffIso}`);
+  const res = await fetch(`${config.url}/rest/v1/readings?${params}`, {
+    headers: {
+      apikey: config.key,
+      Authorization: `Bearer ${config.key}`,
+      Prefer: "count=exact",
+    },
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`Supabase returned ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  }
+  const range = res.headers.get("content-range"); // e.g. "0-0/76612"
+  const total = range ? Number(range.split("/")[1]) : NaN;
+  if (!Number.isFinite(total)) throw new Error("Supabase did not return an exact row count.");
+  return total;
+}
+
+async function fetchDownsampled(
+  config: { url: string; key: string },
+  cutoffIso: string | null,
+  targetPoints: number,
+): Promise<SupabaseRow[]> {
+  // PostgREST doesn't paginate `setof` RPC results via Range headers (it
+  // silently returned the same first chunk on every page when tested), so
+  // page_offset/page_limit are function arguments handled inside the SQL
+  // instead. Still bounded by targetPoints (a small constant), not table
+  // size, which is the whole point of downsampling in SQL.
+  const url = `${config.url}/rest/v1/rpc/readings_downsampled`;
+  const rows: SupabaseRow[] = [];
+  for (let offset = 0; offset < targetPoints; offset += PAGE_SIZE) {
+    const pageLimit = Math.min(PAGE_SIZE, targetPoints - offset);
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        apikey: config.key,
+        Authorization: `Bearer ${config.key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        target_points: targetPoints,
+        cutoff: cutoffIso,
+        page_offset: offset,
+        page_limit: pageLimit,
+      }),
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      throw new Error(`Supabase downsample query failed (${res.status}): ${(await res.text()).slice(0, 300)}`);
+    }
+    const page = (await res.json()) as SupabaseRow[];
+    if (page.length === 0) break;
+    rows.push(...page);
+    if (page.length < pageLimit) break;
+  }
+  return rows;
+}
+
 export async function loadReadings(
   options: LoadReadingsOptions = {},
 ): Promise<ReadingsResponse> {
@@ -92,62 +151,60 @@ export async function loadReadings(
 
   const { rangeHours = null, limit = 5000, maxPoints = 2000 } = options;
 
-  const params = new URLSearchParams({
-    select: "id,device_id,temperature,humidity,device_ts,received_at",
-    order: "received_at.desc",
-  });
-
-  if (rangeHours !== null && rangeHours > 0) {
-    const cutoff = new Date(Date.now() - rangeHours * 3_600_000).toISOString();
-    params.append("received_at", `gte.${cutoff}`);
+  // Bare `?limit=N` with no time window: return the N most recent raw rows,
+  // unsampled. This is a legacy shape kept for direct API callers — the
+  // dashboard UI always sends `range_hours`, which takes the downsampled
+  // path below regardless of table size.
+  if (rangeHours === null && limit < Number.MAX_SAFE_INTEGER) {
+    const rowCap = Math.min(Math.max(1, limit), MAX_ROWS);
+    const params = new URLSearchParams({
+      select: "id,device_id,temperature,humidity,device_ts,received_at",
+      order: "received_at.desc",
+    });
+    const baseUrl = `${config.url}/rest/v1/readings?${params}`;
+    const allRows: SupabaseRow[] = [];
+    for (let from = 0; from < rowCap; from += PAGE_SIZE) {
+      const to = Math.min(from + PAGE_SIZE - 1, rowCap - 1);
+      const page = await fetchPage(baseUrl, config.key, from, to);
+      if (page.length === 0) break;
+      allRows.push(...page);
+      if (page.length < PAGE_SIZE) break;
+    }
+    const readings = sortNewestFirst(allRows.map(toReading));
+    return {
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      sheetTitle: "Supabase",
+      rowsLoaded: readings.length,
+      rowsInRange: readings.length,
+      stride: 1,
+      rangeHours,
+      readings,
+    };
   }
 
-  const baseUrl = `${config.url}/rest/v1/readings?${params}`;
+  // Range / "all" path: downsample in Postgres (readings_downsampled, from
+  // scripts/supabase-schema.sql) so the payload stays ~maxPoints rows no
+  // matter how large the table gets, instead of paginating everything over
+  // HTTP and thinning it out here.
+  const cutoffIso = rangeHours !== null && rangeHours > 0
+    ? new Date(Date.now() - rangeHours * 3_600_000).toISOString()
+    : null;
 
-  // Paginate in 1 000-row pages up to a sane hard cap, regardless of which
-  // branch (windowed vs. limit) set the request up.
-  const rowCap = rangeHours !== null
-    ? MAX_ROWS
-    : Math.min(Math.max(1, limit), MAX_ROWS);
-  const allRows: SupabaseRow[] = [];
+  const [rowsInRange, rows] = await Promise.all([
+    fetchExactCount(config, cutoffIso),
+    fetchDownsampled(config, cutoffIso, maxPoints),
+  ]);
 
-  for (let from = 0; from < rowCap; from += PAGE_SIZE) {
-    const to = Math.min(from + PAGE_SIZE - 1, rowCap - 1);
-    const page = await fetchPage(baseUrl, config.key, from, to);
-    if (page.length === 0) break;
-    allRows.push(...page);
-    if (page.length < PAGE_SIZE) break; // last page
-  }
-
-  const allReadings = allRows.map(toReading);
-
-  // Newest first; rows without a resolvable timestamp fall to the back.
-  // Re-sorting (rather than trusting `received_at` query order) guards
-  // against device_ts/received_at drift, mirroring sheets.ts.
-  allReadings.sort((a, b) => {
-    if (a.timestampMs !== null && b.timestampMs !== null) return b.timestampMs - a.timestampMs;
-    if (a.timestampMs !== null) return -1;
-    if (b.timestampMs !== null) return 1;
-    return b.id - a.id;
-  });
-
-  // Mirror the windowing + downsampling logic from sheets.ts.
-  let windowed = allReadings;
-  if (rangeHours !== null && rangeHours > 0) {
-    const cutoffMs = Date.now() - rangeHours * 3_600_000;
-    windowed = allReadings.filter(
-      (r) => r.timestampMs !== null && r.timestampMs >= cutoffMs,
-    );
-  }
-
-  const { rows: readings, stride } = downsampleByStride(windowed, maxPoints);
+  const readings = sortNewestFirst(rows.map(toReading));
+  const stride = readings.length > 0 ? Math.max(1, Math.round(rowsInRange / readings.length)) : 1;
 
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
     sheetTitle: "Supabase",
-    rowsLoaded: allRows.length,
-    rowsInRange: windowed.length,
+    rowsLoaded: rowsInRange,
+    rowsInRange,
     stride,
     rangeHours,
     readings,

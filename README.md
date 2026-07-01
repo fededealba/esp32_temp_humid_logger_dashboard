@@ -4,13 +4,16 @@ ESP32 Temp/Humidity Logger Dashboard
 Overview
 --------
 
-This branch uses Google Forms and Google Sheets for ingestion and storage.
+This branch uses Google Forms/Sheets and, optionally, Supabase (Postgres) for
+ingestion and storage.
 
 - `firmware/`: ESP32 Arduino sketch for a DHT22 sensor. It submits
-  temperature, humidity, device ID, and timestamp values to a Google Form.
-- `dashboard-web/`: Next.js app and Vercel deployment target. It reads the
-  linked Google Sheet through a serverless API route and renders the dashboard
-  in React.
+  temperature, humidity, device ID, and timestamp values to a Google Form,
+  and — if `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` are set in
+  `secrets.h` — inserts the same reading directly into a Supabase table.
+- `dashboard-web/`: Next.js app and Vercel deployment target. It reads from
+  Supabase when configured, otherwise falls back to the linked Google Sheet,
+  through a serverless API route, and renders the dashboard in React.
 - `dashboard/`: Streamlit dashboard. It reads the linked Google Sheet with
   Google service account credentials and renders metrics, charts, and raw data.
 
@@ -20,10 +23,12 @@ Data Flow
 ---------
 
 1. The ESP32 reads the DHT22 sensor.
-2. The firmware posts form-encoded readings to Google Forms.
+2. The firmware posts form-encoded readings to Google Forms, and — if
+   configured — inserts the same reading into Supabase directly over HTTPS.
 3. Google Forms appends each response to a linked Google Sheet.
-4. The Next.js or Streamlit dashboard reads the Google Sheet and displays the
-   data.
+4. The Next.js dashboard reads from Supabase when `SUPABASE_URL` /
+   `SUPABASE_SERVICE_ROLE_KEY` are set, otherwise reads the Google Sheet. The
+   Streamlit dashboard always reads the Google Sheet.
 
 Quick Start
 -----------
@@ -151,6 +156,11 @@ Then edit `firmware/temp_hum_complete/secrets.h`:
 
 const char* WIFI_SSID = "your-wifi-name";
 const char* WIFI_PASSWORD = "your-wifi-password";
+
+// Optional: leave both empty ("") to skip Supabase and only post to Google
+// Forms. See "Configure Supabase" below before filling these in.
+const char* SUPABASE_URL = "";
+const char* SUPABASE_SERVICE_ROLE_KEY = "";
 ```
 
 Then verify the firmware settings in
@@ -163,6 +173,39 @@ Then verify the firmware settings in
 
 Build and flash from VS Code with the Arduino CLI workflow below, or use the
 Arduino IDE if you prefer.
+
+6b) Configure Supabase (optional direct ESP32 ingestion)
+
+The dashboard and firmware can read/write a Supabase Postgres table directly,
+independent of the Google Forms/Sheets flow.
+
+- Create a project at supabase.com.
+- Open the SQL Editor and run `scripts/supabase-schema.sql` once to create the
+  `readings` table. Skipping this step causes every insert/select against
+  Supabase to fail with a "relation does not exist" (404) error.
+- Copy the project URL and the `service_role` key (Project Settings → API).
+- Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in
+  `firmware/temp_hum_complete/secrets.h` so the ESP32 writes directly to the
+  table on every reading, in addition to Google Forms.
+- Set the same two variables in `dashboard-web/.env.example`-style local env
+  or in the Vercel project settings so the dashboard reads from Supabase
+  instead of Google Sheets.
+
+The `service_role` key bypasses row-level security and grants full
+read/write/delete access. It lives in the firmware binary on a physical
+device you don't fully control — if a device is ever lost, rotate the key in
+Supabase and reflash the fleet with the new one.
+
+To copy existing Google Sheet history into Supabase (e.g. right after setting
+this up, so old readings aren't left behind), run the one-off backfill script
+from `dashboard-web/`:
+
+```sh
+node --env-file=.env.local scripts/backfill-supabase.mjs
+```
+
+It only inserts sheet rows older than the earliest reading already in
+Supabase, so it's safe to re-run — a second run has nothing left to backfill.
 
 Firmware Workflow
 -----------------
@@ -240,7 +283,9 @@ are relative to `dashboard-web/`).
 
 - `app/page.tsx`: dashboard UI, including the interactive Plotly trend chart
   (lazy-loads `plotly.js-basic-dist-min` on the client).
-- `app/api/readings/route.ts`: Vercel serverless API route.
+- `app/api/readings/route.ts`: Vercel serverless API route. Reads from
+  Supabase when configured, otherwise falls back to Google Sheets.
+- `lib/db.ts`: Supabase REST (PostgREST) loading, windowing, and downsampling.
 - `lib/sheets.ts`: Google Sheets authentication, loading, and normalization.
 - `plotly.d.ts`: type shim mapping `plotly.js-basic-dist-min` to `plotly.js` types.
 - `.env.example`: local and Vercel environment variable template.
@@ -258,13 +303,18 @@ The Vercel dashboard includes:
 - Server-side Google Sheets access, so service account credentials are not
   exposed to the browser.
 
-The API route supports the current Google Forms response sheet shape:
+When falling back to Google Sheets, the API route supports the current Google
+Forms response sheet shape:
 
 - First timestamp column: Google Forms submission timestamp.
 - Temperature column: Celsius.
 - Humidity column: percent.
 - Device column: ESP32 MAC address.
 - Later timestamp column: device-generated ISO-8601 timestamp.
+
+When reading from Supabase, it expects the `readings` table created by
+`scripts/supabase-schema.sql`: `id`, `device_id`, `temperature`, `humidity`,
+`device_ts`, `received_at`.
 
 Streamlit Dashboard Features
 ----------------------------
@@ -286,6 +336,9 @@ Configuration
 
 Vercel dashboard environment variables:
 
+- `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`: when both are set, the
+  dashboard reads from Supabase instead of Google Sheets. Run
+  `scripts/supabase-schema.sql` in the Supabase SQL Editor first.
 - `GOOGLE_SHEETS_ID`: response sheet ID.
 - `GOOGLE_CREDENTIALS_JSON`: service account JSON content.
 - `GOOGLE_CLIENT_EMAIL` and `GOOGLE_PRIVATE_KEY`: optional alternative to

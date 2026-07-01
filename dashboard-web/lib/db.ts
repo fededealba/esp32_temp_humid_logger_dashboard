@@ -11,6 +11,15 @@ type SupabaseRow = {
   received_at: string | null;
 };
 
+const PAGE_SIZE = 1_000;
+// Sanity cap so a mistaken `limit` can't trigger unbounded pagination.
+// ~76k rows (the full history as of 2026-07) paginates in ~1.7s server-side,
+// well inside the route's 15s maxDuration; this leaves headroom for growth
+// (the device posts ~1440 rows/day) without silently truncating "all time"
+// history. Revisit with server-side (SQL-level) downsampling if the table
+// grows enough to approach the timeout.
+const MAX_ROWS = 200_000;
+
 function getConfig(): { url: string; key: string } | null {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -84,7 +93,7 @@ export async function loadReadings(
   const { rangeHours = null, limit = 5000, maxPoints = 2000 } = options;
 
   const params = new URLSearchParams({
-    select: "*",
+    select: "id,device_id,temperature,humidity,device_ts,received_at",
     order: "received_at.desc",
   });
 
@@ -95,26 +104,39 @@ export async function loadReadings(
 
   const baseUrl = `${config.url}/rest/v1/readings?${params}`;
 
-  // Paginate in 1 000-row pages up to the effective row cap.
-  const rowCap = rangeHours !== null ? 50_000 : Math.max(1, limit);
-  const pageSize = 1_000;
+  // Paginate in 1 000-row pages up to a sane hard cap, regardless of which
+  // branch (windowed vs. limit) set the request up.
+  const rowCap = rangeHours !== null
+    ? MAX_ROWS
+    : Math.min(Math.max(1, limit), MAX_ROWS);
   const allRows: SupabaseRow[] = [];
 
-  for (let from = 0; from < rowCap; from += pageSize) {
-    const to = Math.min(from + pageSize - 1, rowCap - 1);
+  for (let from = 0; from < rowCap; from += PAGE_SIZE) {
+    const to = Math.min(from + PAGE_SIZE - 1, rowCap - 1);
     const page = await fetchPage(baseUrl, config.key, from, to);
+    if (page.length === 0) break;
     allRows.push(...page);
-    if (page.length < pageSize) break; // last page
+    if (page.length < PAGE_SIZE) break; // last page
   }
 
   const allReadings = allRows.map(toReading);
 
+  // Newest first; rows without a resolvable timestamp fall to the back.
+  // Re-sorting (rather than trusting `received_at` query order) guards
+  // against device_ts/received_at drift, mirroring sheets.ts.
+  allReadings.sort((a, b) => {
+    if (a.timestampMs !== null && b.timestampMs !== null) return b.timestampMs - a.timestampMs;
+    if (a.timestampMs !== null) return -1;
+    if (b.timestampMs !== null) return 1;
+    return b.id - a.id;
+  });
+
   // Mirror the windowing + downsampling logic from sheets.ts.
   let windowed = allReadings;
   if (rangeHours !== null && rangeHours > 0) {
-    const cutoff = Date.now() - rangeHours * 3_600_000;
+    const cutoffMs = Date.now() - rangeHours * 3_600_000;
     windowed = allReadings.filter(
-      (r) => r.timestampMs !== null && r.timestampMs >= cutoff,
+      (r) => r.timestampMs !== null && r.timestampMs >= cutoffMs,
     );
   }
 

@@ -15,14 +15,14 @@
 
 // Secrets (optionally provided via secrets.h)
 #if __has_include("secrets.h")
-#include "secrets.h"  // should define WIFI_SSID, WIFI_PASSWORD, optional API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+#include "secrets.h"  // should define WIFI_SSID, WIFI_PASSWORD, optional API_KEY, SUPABASE_URL, SUPABASE_ANON_KEY
 #else
 // Fallbacks (replace or create secrets.h)
 const char* WIFI_SSID = "YOUR_WIFI_SSID";
 const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 const char* API_KEY = nullptr;  // optional API key header
 const char* SUPABASE_URL = nullptr;             // e.g. https://xxxx.supabase.co ("" or nullptr disables)
-const char* SUPABASE_SERVICE_ROLE_KEY = nullptr;
+const char* SUPABASE_ANON_KEY = nullptr;
 #endif
 
 // Google Forms submission URL (HTTPS)
@@ -289,8 +289,8 @@ bool postGoogleForms(float humidity, float temperature, unsigned long epoch) {
 }
 
 bool postSupabase(float humidity, float temperature, unsigned long epoch) {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY ||
-      strlen(SUPABASE_URL) == 0 || strlen(SUPABASE_SERVICE_ROLE_KEY) == 0) {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY ||
+      strlen(SUPABASE_URL) == 0 || strlen(SUPABASE_ANON_KEY) == 0) {
     return false; // not configured; not an error, just a disabled channel
   }
 
@@ -301,8 +301,8 @@ bool postSupabase(float humidity, float temperature, unsigned long epoch) {
   http.begin(client, url);
   http.setTimeout(HTTP_TIMEOUT_MS);
   http.addHeader("Content-Type", "application/json");
-  http.addHeader("apikey", SUPABASE_SERVICE_ROLE_KEY);
-  http.addHeader("Authorization", String("Bearer ") + SUPABASE_SERVICE_ROLE_KEY);
+  http.addHeader("apikey", SUPABASE_ANON_KEY);
+  http.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);
   http.addHeader("Prefer", "return=minimal");
 
   String payload = buildSupabaseJsonPayload(humidity, temperature, epoch);

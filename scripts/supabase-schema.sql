@@ -74,3 +74,20 @@ as $$
   limit greatest(page_limit, 0)
   offset greatest(page_offset, 0);
 $$;
+
+-- Single-row table tracking whether the last stale-check found the device
+-- offline, and when we last messaged Telegram about it. Lets
+-- scripts/check-stale.mjs alert once per outage (and once on recovery)
+-- instead of spamming a message on every cron run while it stays down.
+create table if not exists public.alert_state (
+  id smallint primary key default 1,
+  is_stale boolean not null default false,
+  last_alert_at timestamptz,
+  constraint alert_state_singleton check (id = 1)
+);
+
+insert into public.alert_state (id, is_stale)
+values (1, false)
+on conflict (id) do nothing;
+
+alter table public.alert_state enable row level security;

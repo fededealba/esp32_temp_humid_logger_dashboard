@@ -207,6 +207,31 @@ node --env-file=.env.local scripts/backfill-supabase.mjs
 It only inserts sheet rows older than the earliest reading already in
 Supabase, so it's safe to re-run — a second run has nothing left to backfill.
 
+6c) Telegram alert when the ESP32 goes quiet
+
+`.github/workflows/stale-check.yml` runs `scripts/check-stale.mjs` every 5
+minutes via GitHub Actions (free at any frequency since this repo is public;
+on a private repo it would eat into the 2,000 free minutes/month). It checks
+the newest reading in Supabase against the same 5-minute staleness threshold
+the dashboard UI uses, and messages a Telegram bot on the transition into or
+out of that state — not on every run, so an extended outage doesn't spam
+repeated alerts.
+
+Setup:
+
+- Message **@BotFather** on Telegram, run `/newbot`, and copy the token.
+- Send your new bot any message, then fetch
+  `https://api.telegram.org/bot<TOKEN>/getUpdates` to find your `chat_id` in
+  the response.
+- Add four repository secrets (Settings → Secrets and variables → Actions):
+  `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (same values as the Vercel
+  dashboard), `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+- Run `scripts/supabase-schema.sql` again if you haven't already since this
+  file added the `alert_state` table the script depends on.
+
+Trigger a manual run from the Actions tab (or `gh workflow run stale-check.yml`)
+to test it without waiting for the schedule.
+
 Firmware Workflow
 -----------------
 

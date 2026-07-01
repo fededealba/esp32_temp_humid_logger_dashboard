@@ -861,12 +861,19 @@ export default function Page() {
     newestForDevice?.timestampMs != null ? Date.now() - newestForDevice.timestampMs : null;
   const isStale = lastAgeMs !== null && lastAgeMs > STALE_AFTER_MS;
 
+  // `sheetTitle` doubles as a data-source tag: "Supabase" when reading from
+  // the database, otherwise the Google Sheet's title.
+  const dataSource = data?.ok ? (data.sheetTitle === "Supabase" ? "Supabase" : "Google Sheets") : null;
+
   return (
     <main className="page">
       <header className="topbar">
         <div>
           <h1>ESP32 Weather Monitor</h1>
-          <p>{latest ? `Last reading ${formatTime(latest, timezone)}` : "Waiting for readings"}</p>
+          <p>
+            {latest ? `Last reading ${formatTime(latest, timezone)}` : "Waiting for readings"}
+            {dataSource ? ` · Source: ${dataSource}` : ""}
+          </p>
         </div>
         <button className="icon-button" type="button" onClick={refresh} disabled={loading} aria-label="Refresh data">
           <span aria-hidden="true">↻</span>

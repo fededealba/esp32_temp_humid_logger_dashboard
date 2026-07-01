@@ -9,7 +9,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "google-auth-library": "10.6.2",
@@ -23,7 +24,8 @@
     "@types/plotly.js": "^3.0.10",
     "@types/react": "latest",
     "@types/react-dom": "latest",
-    "typescript": "latest"
+    "typescript": "latest",
+    "vitest": "^4.1.9"
   },
   "overrides": {
     "postcss": "8.5.10"

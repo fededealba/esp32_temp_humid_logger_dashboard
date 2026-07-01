@@ -189,11 +189,15 @@ function parseTimestamp(value: string | undefined) {
 
 function mapHeader(header: string, index: number) {
   const lower = header.toLowerCase();
+  // Check "timestamp" before the generic "device" substring match: a header
+  // literally named "Device Timestamp" contains both words, and would
+  // otherwise get misclassified as the device ID column (silently
+  // overwriting it, since both would map to the same `record` key).
+  if (lower.includes("timestamp") && index > 0) return "deviceTimestamp";
   if (lower.includes("timestamp") && index === 0) return "receivedAt";
   if (lower.includes("temperature")) return "temperature";
   if (lower.includes("humidity")) return "humidity";
   if (lower.includes("device")) return "deviceId";
-  if (lower.includes("timestamp") && index > 0) return "deviceTimestamp";
   return null;
 }
 

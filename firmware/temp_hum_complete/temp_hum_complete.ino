@@ -15,22 +15,17 @@
 
 // Secrets (optionally provided via secrets.h)
 #if __has_include("secrets.h")
-#include "secrets.h"  // should define WIFI_SSID, WIFI_PASSWORD, optional API_KEY, SUPABASE_URL, SUPABASE_ANON_KEY
+#include "secrets.h"  // should define WIFI_SSID, WIFI_PASSWORD, SUPABASE_URL, SUPABASE_ANON_KEY
 #else
 // Fallbacks (replace or create secrets.h)
 const char* WIFI_SSID = "YOUR_WIFI_SSID";
 const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
-const char* API_KEY = nullptr;  // optional API key header
 const char* SUPABASE_URL = nullptr;             // e.g. https://xxxx.supabase.co ("" or nullptr disables)
 const char* SUPABASE_ANON_KEY = nullptr;
 #endif
 
 // Google Forms submission URL (HTTPS)
 const char* SERVER_URL = "https://docs.google.com/forms/d/e/1FAIpQLSdaHQuuWAcFIjU44oZUqOMrtZhC9smcMoF9IOquQO8FFVwU5Q/formResponse";
-
-// Device metadata
-const char* DEVICE_NAME = "esp32-dht22";
-const char* FIRMWARE_VERSION = "1.2.0";
 
 // DHT22 setup
 #define DHTPIN 4
@@ -61,7 +56,6 @@ bool readDHTStable(float &humidity, float &temperature);
 String iso8601UTC(unsigned long epoch);
 String hhmmssUTC(unsigned long epoch);
 bool isPlausible(float humidity, float temperature);
-String buildJsonPayload(float humidity, float temperature, unsigned long epoch);
 String buildSupabaseJsonPayload(float humidity, float temperature, unsigned long epoch);
 bool postGoogleForms(float humidity, float temperature, unsigned long epoch);
 bool postSupabase(float humidity, float temperature, unsigned long epoch);
@@ -233,37 +227,6 @@ bool isPlausible(float humidity, float temperature) {
   if (humidity < 0.0f || humidity > 100.0f) return false;
   if (temperature < -40.0f || temperature > 85.0f) return false; // DHT22 range
   return true;
-}
-
-String buildJsonPayload(float humidity, float temperature, unsigned long epoch) {
-  String out;
-#if HAVE_ARDUINOJSON
-  {
-    StaticJsonDocument<256> doc;
-    doc["device"] = WiFi.macAddress();
-    doc["name"] = DEVICE_NAME;
-    doc["fw"] = FIRMWARE_VERSION;
-    doc["temperature"] = roundf(temperature * 100.0f) / 100.0f;
-    doc["humidity"] = roundf(humidity * 100.0f) / 100.0f;
-    doc["time"] = hhmmssUTC(epoch);
-    doc["timestamp"] = iso8601UTC(epoch);
-    doc["epoch"] = epoch;
-    serializeJson(doc, out);
-  }
-#else
-  out.reserve(160);
-  out = String("{") +
-        "\"device\": \"" + WiFi.macAddress() + "\"," +
-        " \"name\": \"" + DEVICE_NAME + "\"," +
-        " \"fw\": \"" + FIRMWARE_VERSION + "\"," +
-        " \"temperature\": " + String(temperature, 2) +
-        ", \"humidity\": " + String(humidity, 2) +
-        ", \"time\": \"" + hhmmssUTC(epoch) + "\"," +
-        " \"timestamp\": \"" + iso8601UTC(epoch) + "\"," +
-        " \"epoch\": " + String(epoch) +
-        "}";
-#endif
-  return out;
 }
 
 bool postGoogleForms(float humidity, float temperature, unsigned long epoch) {

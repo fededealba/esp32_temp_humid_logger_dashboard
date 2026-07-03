@@ -135,6 +135,24 @@ function ratePerMinute(timestamps: number[], values: number[]): number | null {
 
 type PlotlyApi = typeof import("plotly.js");
 
+// The div Plotly.react attaches to gets `on`/`removeAllListeners` methods
+// bolted on. Type them narrowly so we don't need to `as any` every time we
+// wire up an event listener.
+type PlotlyEventDiv = HTMLDivElement & {
+  on(name: string, handler: (e: Record<string, unknown>) => void): void;
+  removeAllListeners(name: string): void;
+};
+
+// Plotly's plotly_relayout event usually delivers date-axis range values as
+// strings, but versions have varied (numbers, Date objects). Normalise so
+// callers can safely store `[string, string]`.
+function normalizeAxisValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number") return new Date(value).toISOString();
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
+
 let plotlyPromise: Promise<PlotlyApi> | null = null;
 
 function loadPlotly(): Promise<PlotlyApi> {
@@ -144,6 +162,17 @@ function loadPlotly(): Promise<PlotlyApi> {
     );
   }
   return plotlyPromise;
+}
+
+// Inverse of `zonedDateString` for the purposes of comparison only. Treats
+// the wall-clock string as UTC so the returned ms is offset by whatever the
+// display timezone was — which is fine because both sides of any comparison
+// go through this same function, so the offset cancels. Using this rather
+// than raw string comparison protects against a future change to
+// `zonedDateString`'s format (e.g. adding a weekday prefix) silently
+// breaking chronological ordering.
+function zonedDateStringMs(s: string): number {
+  return Date.parse(s.replace(" ", "T") + "Z");
 }
 
 // Plotly renders date values literally (as if UTC), so feed it wall-clock
@@ -324,14 +353,13 @@ function MetricChart({
       Plotly.react(containerRef.current, data, layout, config);
 
       // Attach x-axis sync listener, replacing any stale one from a prior render.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const plotlyEl = containerRef.current as unknown as any;
+      const plotlyEl = containerRef.current as PlotlyEventDiv;
       plotlyEl.removeAllListeners("plotly_relayout");
       plotlyEl.on("plotly_relayout", (eventData: Record<string, unknown>) => {
         if (eventData["xaxis.range[0]"] !== undefined) {
           const range: [string, string] = [
-            String(eventData["xaxis.range[0]"]),
-            String(eventData["xaxis.range[1]"]),
+            normalizeAxisValue(eventData["xaxis.range[0]"]),
+            normalizeAxisValue(eventData["xaxis.range[1]"]),
           ];
           const rangeStr = JSON.stringify(range);
           if (rangeStr !== lastAppliedRange.current) {
@@ -449,12 +477,14 @@ function ScatterChart({
   // Drop rows without timestamps; also filter to the zoomed time window when set.
   // Sort oldest-first so the animation plays in chronological order.
   const points = useMemo(() => {
+    const start = xAxisRange ? zonedDateStringMs(xAxisRange[0]) : null;
+    const end = xAxisRange ? zonedDateStringMs(xAxisRange[1]) : null;
     return readings
       .filter((r) => {
         if (r.timestampMs == null) return false;
-        if (!xAxisRange) return true;
-        const s = zonedDateString(r.timestampMs, timezone);
-        return s >= xAxisRange[0] && s <= xAxisRange[1];
+        if (start === null || end === null) return true;
+        const t = zonedDateStringMs(zonedDateString(r.timestampMs, timezone));
+        return t >= start && t <= end;
       })
       .sort((a, b) => (a.timestampMs ?? 0) - (b.timestampMs ?? 0));
   }, [readings, xAxisRange, timezone]);
@@ -826,14 +856,14 @@ export default function Page() {
     return Array.from(new Set(readings.map((reading) => reading.deviceId))).sort();
   }, [readings]);
 
+  // The server already windows to `rangeHours`; here we only need to narrow
+  // by device. The time cutoff that used to live here was a leftover from the
+  // pre-server-windowing days and would drift with `Date.now()` across
+  // re-renders while adding nothing on top of the fetched payload.
   const filtered = useMemo(() => {
-    const cutoff = rangeHours ? Date.now() - rangeHours * 60 * 60 * 1000 : null;
-    return readings.filter((reading) => {
-      if (device !== "all" && reading.deviceId !== device) return false;
-      if (cutoff && reading.timestampMs && reading.timestampMs < cutoff) return false;
-      return true;
-    });
-  }, [device, rangeHours, readings]);
+    if (device === "all") return readings;
+    return readings.filter((reading) => reading.deviceId === device);
+  }, [device, readings]);
 
   const latest = filtered[0];
   const tempUnit = useFahrenheit ? "F" : "C";

@@ -66,9 +66,17 @@ async function main() {
   } else {
     const { device_ts, received_at } = latestRows[0];
     const deviceTsMs = device_ts ? Date.parse(device_ts) : NaN;
-    const timestampMs = Number.isFinite(deviceTsMs) ? deviceTsMs : Date.parse(received_at);
-    ageMinutes = Math.round((Date.now() - timestampMs) / 60_000);
-    isStale = Date.now() - timestampMs > STALE_AFTER_MS;
+    const receivedAtMs = received_at ? Date.parse(received_at) : NaN;
+    const timestampMs = Number.isFinite(deviceTsMs) ? deviceTsMs : receivedAtMs;
+    // Treat unparseable timestamps as stale rather than silently no-op: a
+    // malformed newest row (Date.parse(undefined) === NaN) would otherwise
+    // make `NaN > STALE_AFTER_MS` false and skip the alert.
+    if (!Number.isFinite(timestampMs)) {
+      isStale = true;
+    } else {
+      ageMinutes = Math.round((Date.now() - timestampMs) / 60_000);
+      isStale = Date.now() - timestampMs > STALE_AFTER_MS;
+    }
   }
 
   console.log(`isStale=${isStale} wasStale=${wasStale} ageMinutes=${ageMinutes}`);

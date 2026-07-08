@@ -283,8 +283,11 @@ PORT=/dev/ttyUSB0 make firmware-monitor
 The monitor leaves `DTR` and `RTS` off so ESP32 boards are not held in reset by
 the serial terminal.
 
-The default board FQBN is `esp32:esp32:esp32`. Override it if your board needs a
-more specific profile:
+The default board FQBN is `esp32:esp32:esp32`, compiled with
+`PartitionScheme=huge_app` (a 3MB app partition instead of the default
+1.2MB — NimBLE-Arduino alone used most of that). This drops OTA support,
+which the project doesn't use since flashing is always via USB. Override
+`PARTITION_SCHEME` or `FQBN` if your board needs a different profile:
 
 ```sh
 FQBN=esp32:esp32:esp32doit-devkit-v1 make firmware-compile

@@ -7,6 +7,10 @@ FQBN="${FQBN:-esp32:esp32:esp32}"
 PORT="${PORT:-}"
 BAUD="${BAUD:-115200}"
 UPLOAD_SPEED="${UPLOAD_SPEED:-115200}"
+# huge_app trades away OTA support (never used here; flashing is always via
+# USB) for a 3MB app partition instead of the default 1.2MB. NimBLE-Arduino
+# alone pushed the default partition to 99% full.
+PARTITION_SCHEME="${PARTITION_SCHEME:-huge_app}"
 ESP32_INDEX_URL="${ESP32_INDEX_URL:-https://espressif.github.io/arduino-esp32/package_esp32_index.json}"
 TOOLS_DIR="${TOOLS_DIR:-$ROOT_DIR/.tools}"
 LOCAL_BIN_DIR="${LOCAL_BIN_DIR:-$TOOLS_DIR/bin}"
@@ -136,15 +140,16 @@ case "$cmd" in
     "$ARDUINO_CLI" lib install "DHT sensor library"
     "$ARDUINO_CLI" lib install "Adafruit Unified Sensor"
     "$ARDUINO_CLI" lib install "ArduinoJson"
+    "$ARDUINO_CLI" lib install "NimBLE-Arduino"
     ;;
   compile)
     require_cli
-    "$ARDUINO_CLI" compile --fqbn "$FQBN" "$@" "$SKETCH_DIR"
+    "$ARDUINO_CLI" compile --fqbn "$FQBN" --board-options "PartitionScheme=$PARTITION_SCHEME" "$@" "$SKETCH_DIR"
     ;;
   upload)
     require_cli
     require_port "$cmd"
-    "$ARDUINO_CLI" compile --upload --port "$PORT" --fqbn "$FQBN" --board-options "UploadSpeed=$UPLOAD_SPEED" "$@" "$SKETCH_DIR"
+    "$ARDUINO_CLI" compile --upload --port "$PORT" --fqbn "$FQBN" --board-options "PartitionScheme=$PARTITION_SCHEME,UploadSpeed=$UPLOAD_SPEED" "$@" "$SKETCH_DIR"
     ;;
   monitor)
     require_cli

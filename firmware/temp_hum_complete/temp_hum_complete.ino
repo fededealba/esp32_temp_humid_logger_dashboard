@@ -4,6 +4,7 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <DHT.h>
+#include <NimBLEDevice.h>
 #include <time.h>
 #include <string.h>
 #if __has_include(<ArduinoJson.h>)
@@ -48,6 +49,13 @@ const uint16_t HTTP_TIMEOUT_MS = 5000;
 const uint8_t dhtMaxAttempts = 3;
 const uint16_t dhtRetryDelayMs = 2000; // DHT22 prefers >=2s between attempts
 
+// TP357 BLE sensor (ThermoPro): passively decoded from its advertisement,
+// no pairing. Byte layout reverse-engineered by the community and verified
+// against this exact unit; see thermopro-ble (Bluetooth-Devices org) for the
+// reference decoder this is ported from.
+const char* TP357_NAME_PREFIX = "TP357";
+const uint32_t BLE_SCAN_MS = 5000; // TP357 advertises every ~2-3s
+
 // Forward declarations
 void connectWiFi();
 void setupTime();
@@ -56,9 +64,11 @@ bool readDHTStable(float &humidity, float &temperature);
 String iso8601UTC(unsigned long epoch);
 String hhmmssUTC(unsigned long epoch);
 bool isPlausible(float humidity, float temperature);
-String buildSupabaseJsonPayload(float humidity, float temperature, unsigned long epoch);
+String buildSupabaseJsonPayload(const String &deviceId, float humidity, float temperature, unsigned long epoch);
 bool postGoogleForms(float humidity, float temperature, unsigned long epoch);
-bool postSupabase(float humidity, float temperature, unsigned long epoch);
+bool postSupabase(const String &deviceId, float humidity, float temperature, unsigned long epoch);
+bool decodeTP357ManufacturerData(const std::string &data, float &tempC, float &humidityPct);
+bool scanForTP357(String &label, float &tempC, float &humidityPct);
 unsigned long currentInterval();
 void onWiFiEvent(WiFiEvent_t event);
 
@@ -76,6 +86,16 @@ void setup() {
   if (!ensureTimeSync()) {
     Serial.println("Warning: NTP time not available yet; will retry later.");
   }
+
+  // BLE scanning coexists with WiFi (the ESP32 radio time-slices between
+  // them automatically), as long as they aren't both actively transmitting
+  // at the same instant — the loop always finishes the BLE scan before
+  // making any HTTP requests, so they never overlap in practice.
+  NimBLEDevice::init("esp32-dht22");
+  NimBLEScan* bleScan = NimBLEDevice::getScan();
+  bleScan->setActiveScan(true);
+  bleScan->setInterval(100);
+  bleScan->setWindow(100);
 
   lastScheduled = millis();
 }
@@ -133,13 +153,28 @@ void loop() {
     bool supabaseOk = false;
     if (WiFi.status() == WL_CONNECTED) {
       sheetsOk = postGoogleForms(humidity, temperature, epoch);
-      supabaseOk = postSupabase(humidity, temperature, epoch);
+      supabaseOk = postSupabase(WiFi.macAddress(), humidity, temperature, epoch);
     }
 
     if (sheetsOk || supabaseOk) {
       backoffExp = 0; // at least one destination got the reading
     } else {
       if (backoffExp < 6) backoffExp++; // up to 2^6 = 64x
+    }
+
+    // Opportunistically pick up the TP357's broadcast too. This is a bonus
+    // second sensor, not the primary reading, so a miss here doesn't affect
+    // backoff or the DHT22 write above.
+    String tp357Label;
+    float tp357Temp = NAN;
+    float tp357Humidity = NAN;
+    if (WiFi.status() == WL_CONNECTED && scanForTP357(tp357Label, tp357Temp, tp357Humidity)) {
+      Serial.print("TP357 "); Serial.print(tp357Label);
+      Serial.print(": "); Serial.print(tp357Temp); Serial.print(" C, ");
+      Serial.print(tp357Humidity); Serial.println(" %");
+      postSupabase(tp357Label, tp357Humidity, tp357Temp, epoch);
+    } else {
+      Serial.println("TP357 not seen this cycle.");
     }
   }
 }
@@ -251,7 +286,7 @@ bool postGoogleForms(float humidity, float temperature, unsigned long epoch) {
   return code > 0 && code < 400;
 }
 
-bool postSupabase(float humidity, float temperature, unsigned long epoch) {
+bool postSupabase(const String &deviceId, float humidity, float temperature, unsigned long epoch) {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY ||
       strlen(SUPABASE_URL) == 0 || strlen(SUPABASE_ANON_KEY) == 0) {
     return false; // not configured; not an error, just a disabled channel
@@ -268,7 +303,7 @@ bool postSupabase(float humidity, float temperature, unsigned long epoch) {
   http.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);
   http.addHeader("Prefer", "return=minimal");
 
-  String payload = buildSupabaseJsonPayload(humidity, temperature, epoch);
+  String payload = buildSupabaseJsonPayload(deviceId, humidity, temperature, epoch);
   int code = http.POST(payload);
   Serial.print("Supabase HTTP response: ");
   Serial.println(code);
@@ -298,7 +333,7 @@ String buildFormPayload(float humidity, float temperature, unsigned long epoch) 
   return out;
 }
 
-String buildSupabaseJsonPayload(float humidity, float temperature, unsigned long epoch) {
+String buildSupabaseJsonPayload(const String &deviceId, float humidity, float temperature, unsigned long epoch) {
   // `received_at` is left out on purpose: the table defaults it to the DB's
   // own now() so it reflects when the row actually arrived, independent of
   // this device's clock.
@@ -306,7 +341,7 @@ String buildSupabaseJsonPayload(float humidity, float temperature, unsigned long
 #if HAVE_ARDUINOJSON
   {
     StaticJsonDocument<256> doc;
-    doc["device_id"] = WiFi.macAddress();
+    doc["device_id"] = deviceId;
     doc["temperature"] = roundf(temperature * 100.0f) / 100.0f;
     doc["humidity"] = roundf(humidity * 100.0f) / 100.0f;
     doc["device_ts"] = iso8601UTC(epoch);
@@ -315,13 +350,50 @@ String buildSupabaseJsonPayload(float humidity, float temperature, unsigned long
 #else
   out.reserve(160);
   out = String("{") +
-        "\"device_id\": \"" + WiFi.macAddress() + "\"," +
+        "\"device_id\": \"" + deviceId + "\"," +
         " \"temperature\": " + String(temperature, 2) +
         ", \"humidity\": " + String(humidity, 2) +
         ", \"device_ts\": \"" + iso8601UTC(epoch) + "\"" +
         "}";
 #endif
   return out;
+}
+
+bool decodeTP357ManufacturerData(const std::string &data, float &tempC, float &humidityPct) {
+  // Byte layout (from thermopro-ble, Bluetooth-Devices org, MIT licensed):
+  // data[0..1] is the BLE "manufacturer ID" field, which this device reuses
+  // as part of its own payload rather than a real registered company ID.
+  // data[1..2] = signed int16 LE, temperature in tenths of a degree C.
+  // data[3]    = humidity, as a direct percentage.
+  if (data.length() < 6) return false;
+  uint8_t b1 = (uint8_t)data[1];
+  uint8_t b2 = (uint8_t)data[2];
+  uint8_t b3 = (uint8_t)data[3];
+  if (b1 == 0xFF && b2 == 0xFF && b3 == 0xFF) return false; // sensor's own "invalid" marker
+  int16_t tempRaw = (int16_t)((uint16_t)b1 | ((uint16_t)b2 << 8));
+  tempC = tempRaw / 10.0f;
+  humidityPct = (float)b3;
+  return true;
+}
+
+bool scanForTP357(String &label, float &tempC, float &humidityPct) {
+  NimBLEScan* bleScan = NimBLEDevice::getScan();
+  NimBLEScanResults results = bleScan->getResults(BLE_SCAN_MS, false);
+  bool found = false;
+  for (int i = 0; i < results.getCount() && !found; i++) {
+    const NimBLEAdvertisedDevice* device = results.getDevice(i);
+    if (!device->haveName()) continue;
+    std::string name = device->getName();
+    if (name.rfind(TP357_NAME_PREFIX, 0) != 0) continue; // doesn't start with "TP357"
+    if (!device->haveManufacturerData()) continue;
+    std::string mfgData = device->getManufacturerData();
+    if (decodeTP357ManufacturerData(mfgData, tempC, humidityPct)) {
+      label = String(name.c_str());
+      found = true;
+    }
+  }
+  bleScan->clearResults();
+  return found;
 }
 
 unsigned long currentInterval() {

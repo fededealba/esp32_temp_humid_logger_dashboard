@@ -2,11 +2,13 @@ FQBN ?= esp32:esp32:esp32
 PORT ?=
 BAUD ?= 115200
 UPLOAD_SPEED ?= 115200
+PARTITION_SCHEME ?= huge_app
 
 export FQBN
 export PORT
 export BAUD
 export UPLOAD_SPEED
+export PARTITION_SCHEME
 
 .PHONY: firmware-help firmware-install-cli firmware-setup firmware-compile firmware-upload firmware-monitor firmware-ports firmware-boards
 

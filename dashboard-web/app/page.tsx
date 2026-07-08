@@ -60,6 +60,24 @@ const POST_INTERVAL_MS = 60 * 1000;
 // Warn when the newest reading is older than ~5 missed posts.
 const STALE_AFTER_MS = 5 * POST_INTERVAL_MS;
 
+// Per-device line colors for the temperature/humidity charts. Index 0 in
+// each palette matches the original single-device color exactly, so nothing
+// changes visually when only one device is present — additional devices
+// cycle through the rest of the palette.
+const TEMP_COLORS = {
+  light: ["#c2410c", "#be185d", "#b45309", "#7c2d12"],
+  dark: ["#f97316", "#fb7185", "#fbbf24", "#fb923c"],
+};
+const HUMIDITY_COLORS = {
+  light: ["#087ea4", "#7c3aed", "#0d9488", "#4338ca"],
+  dark: ["#38bdf8", "#a78bfa", "#2dd4bf", "#818cf8"],
+};
+// Area fill under the line only makes sense with a single trace; with two+
+// devices overlapping semi-transparent fills just looks muddy, so it's only
+// used when there's exactly one device.
+const TEMP_FILL = { light: "rgba(194, 65, 12, 0.12)", dark: "rgba(249, 115, 22, 0.18)" };
+const HUMIDITY_FILL = { light: "rgba(8, 126, 164, 0.12)", dark: "rgba(56, 189, 248, 0.18)" };
+
 function formatAge(ms: number) {
   const minutes = Math.floor(ms / 60000);
   if (minutes < 60) return `${minutes} min`;
@@ -232,6 +250,11 @@ function MetricChart({
     [readings],
   );
 
+  const deviceIds = useMemo(
+    () => Array.from(new Set(chartReadings.map((r) => r.deviceId))).sort(),
+    [chartReadings],
+  );
+
   const hasEnough = chartReadings.length >= 2;
 
   useEffect(() => {
@@ -239,92 +262,102 @@ function MetricChart({
 
     let cancelled = false;
     const tempUnit = useFahrenheit ? "°F" : "°C";
+    const multiDevice = deviceIds.length > 1;
 
-    const ts = chartReadings.map((r) => r.timestampMs ?? 0);
-    const dts: number[] = [];
-    for (let i = 1; i < ts.length; i++) dts.push(ts[i] - ts[i - 1]);
-    const sortedDts = dts.slice().sort((a, b) => a - b);
-    const medianDt =
-      sortedDts.length > 0 ? sortedDts[Math.floor(sortedDts.length / 2)] : POST_INTERVAL_MS;
-    const gapThreshold = Math.max(3 * medianDt, 3 * POST_INTERVAL_MS);
+    const palette = (isTemp ? TEMP_COLORS : HUMIDITY_COLORS)[isDark ? "dark" : "light"];
+    const singleFill = (isTemp ? TEMP_FILL : HUMIDITY_FILL)[isDark ? "dark" : "light"];
 
-    const x: string[] = [];
-    const y: (number | null)[] = [];
-    const markerSize: number[] = [];
+    const allValues: number[] = [];
+    const data: Data[] = deviceIds.map((deviceId, idx) => {
+      // Gaps are detected per-device: mixing two devices' own cadences
+      // would misdetect gaps against the wrong sensor's posting interval.
+      const deviceReadings = chartReadings.filter((r) => r.deviceId === deviceId);
+      const ts = deviceReadings.map((r) => r.timestampMs ?? 0);
+      const dts: number[] = [];
+      for (let i = 1; i < ts.length; i++) dts.push(ts[i] - ts[i - 1]);
+      const sortedDts = dts.slice().sort((a, b) => a - b);
+      const medianDt =
+        sortedDts.length > 0 ? sortedDts[Math.floor(sortedDts.length / 2)] : POST_INTERVAL_MS;
+      const gapThreshold = Math.max(3 * medianDt, 3 * POST_INTERVAL_MS);
 
-    for (let i = 0; i < chartReadings.length; i++) {
-      const r = chartReadings[i];
-      const t = ts[i];
-      const prevGap = i > 0 && t - ts[i - 1] > gapThreshold;
-      const nextGap = i + 1 < ts.length && ts[i + 1] - t > gapThreshold;
-      const value = isTemp
-        ? useFahrenheit
-          ? toFahrenheit(r.temperature)
-          : r.temperature
-        : r.humidity;
+      const x: string[] = [];
+      const y: (number | null)[] = [];
+      const markerSize: number[] = [];
 
-      x.push(zonedDateString(t, timezone));
-      y.push(value);
-      markerSize.push(prevGap || nextGap ? 5 : 0);
+      for (let i = 0; i < deviceReadings.length; i++) {
+        const r = deviceReadings[i];
+        const t = ts[i];
+        const prevGap = i > 0 && t - ts[i - 1] > gapThreshold;
+        const nextGap = i + 1 < ts.length && ts[i + 1] - t > gapThreshold;
+        const value = isTemp
+          ? useFahrenheit
+            ? toFahrenheit(r.temperature)
+            : r.temperature
+          : r.humidity;
 
-      if (nextGap) {
-        x.push(zonedDateString((t + ts[i + 1]) / 2, timezone));
-        y.push(null);
-        markerSize.push(0);
+        x.push(zonedDateString(t, timezone));
+        y.push(value);
+        markerSize.push(prevGap || nextGap ? 5 : 0);
+        allValues.push(value);
+
+        if (nextGap) {
+          x.push(zonedDateString((t + ts[i + 1]) / 2, timezone));
+          y.push(null);
+          markerSize.push(0);
+        }
       }
-    }
 
-    const validY = y.filter((v): v is number => v !== null);
-    const yMin = validY.length
+      const color = palette[idx % palette.length];
+      // With one device the hover box's own trace-name label is redundant
+      // (it's the only line); with two+ it disambiguates which is which.
+      const hoverFmt = multiDevice
+        ? (isTemp ? `%{y:.1f}${tempUnit}` : "%{y:.1f}%")
+        : (isTemp ? `%{y:.1f}${tempUnit}<extra></extra>` : "%{y:.1f}%<extra></extra>");
+
+      return {
+        type: "scatter",
+        mode: "lines+markers",
+        name: deviceId,
+        x,
+        y,
+        line: { color, width: 2.5, shape: "linear" },
+        marker: { color, size: markerSize },
+        fill: multiDevice ? "none" : "tozeroy",
+        fillcolor: multiDevice ? undefined : singleFill,
+        hovertemplate: hoverFmt,
+      };
+    });
+
+    const yMin = allValues.length
       ? isTemp
-        ? Math.min(...validY) - 1
-        : Math.max(0, Math.min(...validY) - 5)
+        ? Math.min(...allValues) - 1
+        : Math.max(0, Math.min(...allValues) - 5)
       : 0;
-    const yMax = validY.length
+    const yMax = allValues.length
       ? isTemp
-        ? Math.max(...validY) + 1
-        : Math.min(100, Math.max(...validY) + 5)
+        ? Math.max(...allValues) + 1
+        : Math.min(100, Math.max(...allValues) + 5)
       : 100;
 
-    const lineColor = isDark
-      ? isTemp ? "#f97316" : "#38bdf8"
-      : isTemp ? "#c2410c" : "#087ea4";
-    const fillColor = isDark
-      ? isTemp ? "rgba(249, 115, 22, 0.18)" : "rgba(56, 189, 248, 0.18)"
-      : isTemp ? "rgba(194, 65, 12, 0.12)" : "rgba(8, 126, 164, 0.12)";
     const gridColor = isDark ? "#2a3a4a" : "#eef2f4";
     const axisColor = isDark ? "#3a4f63" : "#b8c3cc";
     const fontColor = isDark ? "#7a8fa3" : "#607080";
     const hoverBg = isDark ? "#19232e" : "#ffffff";
     const hoverBorder = isDark ? "#2a3a4a" : "#d8e0e6";
     const hoverFont = isDark ? "#e2e8ef" : "#182027";
-    const hoverFmt = isTemp ? `%{y:.1f}${tempUnit}<extra></extra>` : "%{y:.1f}%<extra></extra>";
-
-    const data: Data[] = [
-      {
-        type: "scatter",
-        mode: "lines+markers",
-        x,
-        y,
-        line: { color: lineColor, width: 2.5, shape: "linear" },
-        marker: { color: lineColor, size: markerSize },
-        fill: "tozeroy",
-        fillcolor: fillColor,
-        hovertemplate: hoverFmt,
-      },
-    ];
 
     const layout: Partial<Layout> = {
       autosize: true,
       height: 280,
       uirevision: `${useFahrenheit ? "f" : "c"}|${timezone}|${viewKey}`,
-      margin: { l: 56, r: 24, t: 12, b: 44 },
+      margin: { l: 56, r: 24, t: multiDevice ? 32 : 12, b: 44 },
       paper_bgcolor: "rgba(0,0,0,0)",
       plot_bgcolor: "rgba(0,0,0,0)",
       font: { family: "Inter, ui-sans-serif, system-ui, sans-serif", size: 12, color: fontColor },
       hovermode: "x unified",
       hoverlabel: { bgcolor: hoverBg, bordercolor: hoverBorder, font: { color: hoverFont } },
-      showlegend: false,
+      showlegend: multiDevice,
+      legend: { orientation: "h", y: 1.12, font: { color: fontColor, size: 11 } },
       xaxis: {
         type: "date",
         hoverformat: "%b %d, %H:%M",
@@ -334,7 +367,7 @@ function MetricChart({
         zeroline: false,
       },
       yaxis: {
-        tickfont: { color: lineColor },
+        tickfont: { color: multiDevice ? fontColor : palette[0] },
         range: [yMin, yMax],
         gridcolor: gridColor,
         zeroline: false,
@@ -378,7 +411,7 @@ function MetricChart({
     return () => {
       cancelled = true;
     };
-  }, [chartReadings, hasEnough, isDark, isTemp, useFahrenheit, timezone, viewKey]);
+  }, [chartReadings, deviceIds, hasEnough, isDark, isTemp, useFahrenheit, timezone, viewKey]);
 
   // Apply an x-axis range received from the sibling chart.
   useEffect(() => {
@@ -474,6 +507,15 @@ function ScatterChart({
     return () => mq.removeEventListener("change", update);
   }, []);
 
+  // This chart plots one continuous chronological trajectory (colored by
+  // time, animated as a single path) — that concept doesn't extend to
+  // multiple devices without a much larger redesign, so it's disabled
+  // rather than plotting a path that zigzags between two sensors.
+  const multiDevice = useMemo(
+    () => new Set(readings.map((r) => r.deviceId)).size > 1,
+    [readings],
+  );
+
   // Drop rows without timestamps; also filter to the zoomed time window when set.
   // Sort oldest-first so the animation plays in chronological order.
   const points = useMemo(() => {
@@ -512,7 +554,7 @@ function ScatterChart({
     return () => clearInterval(id);
   }, [isPlaying, points.length]);
 
-  const hasEnough = points.length >= 2;
+  const hasEnough = points.length >= 2 && !multiDevice;
   const isDark = useDarkMode();
 
   // Slice to the current animation frame, or use all points when idle.
@@ -693,7 +735,9 @@ function ScatterChart({
         ref={containerRef}
         style={{ minHeight: isNarrow ? 380 : 460, display: hasEnough ? "block" : "none" }}
       />
-      {hasEnough ? null : (
+      {hasEnough ? null : multiDevice ? (
+        <div className="empty-panel">Select a specific device (above) to see this chart.</div>
+      ) : (
         <div className="empty-panel">Waiting for enough timestamped readings.</div>
       )}
       {hasEnough ? (
@@ -868,6 +912,18 @@ export default function Page() {
   const latest = filtered[0];
   const tempUnit = useFahrenheit ? "F" : "C";
 
+  // One card per device when viewing "All devices" with more than one
+  // present, instead of a single ambiguous "latest reading from whichever
+  // device happened to post most recently" value.
+  const latestByDevice = useMemo(() => {
+    const map = new Map<string, Reading>();
+    for (const reading of filtered) {
+      if (!map.has(reading.deviceId)) map.set(reading.deviceId, reading);
+    }
+    return map;
+  }, [filtered]);
+  const showPerDeviceStatus = device === "all" && devices.length > 1;
+
   // Max/Min for each chart header. Computed in the displayed unit so the
   // labels match what the user sees in the chart.
   const tempStats = useMemo(() => {
@@ -966,11 +1022,29 @@ export default function Page() {
 
       {error ? <div className="error-banner">{error}</div> : null}
 
-      <StatusCard
-        currentTempC={latest ? latest.temperature : null}
-        humidity={latest ? latest.humidity : null}
-        useFahrenheit={useFahrenheit}
-      />
+      {showPerDeviceStatus ? (
+        <div className="status-card-group">
+          {devices.map((deviceId) => {
+            const reading = latestByDevice.get(deviceId) ?? null;
+            return (
+              <div key={deviceId} className="status-card-item">
+                <div className="status-card-item-label">{deviceId}</div>
+                <StatusCard
+                  currentTempC={reading ? reading.temperature : null}
+                  humidity={reading ? reading.humidity : null}
+                  useFahrenheit={useFahrenheit}
+                />
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <StatusCard
+          currentTempC={latest ? latest.temperature : null}
+          humidity={latest ? latest.humidity : null}
+          useFahrenheit={useFahrenheit}
+        />
+      )}
 
       <section className="panel chart-panel" style={{ marginTop: 16 }}>
         <div className="panel-header">

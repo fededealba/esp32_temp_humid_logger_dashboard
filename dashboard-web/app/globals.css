@@ -144,6 +144,27 @@ input {
   box-shadow: var(--shadow);
 }
 
+.status-card-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.status-card-group .status-card-item {
+  flex: 1 1 320px;
+}
+
+.status-card-group .status-card {
+  margin-top: 8px;
+}
+
+.status-card-item-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
 .status-metrics {
   display: grid;
   grid-template-columns: 1fr auto 1fr auto 1fr;

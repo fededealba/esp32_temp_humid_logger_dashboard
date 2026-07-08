@@ -242,6 +242,21 @@ input {
 .comfort-comfort { color: var(--green); }
 .comfort-wet { color: var(--humidity); }
 
+.extra-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.extra-metric-label {
+  color: var(--muted);
+}
+
 .panel {
   min-width: 0;
   border: 1px solid var(--line);

@@ -110,6 +110,24 @@ function heatIndexCelsius(tempC: number, humidity: number): number {
   return ((hiF - 32) * 5) / 9;
 }
 
+// August-Roche-Magnus approximation, accurate to within ~0.4°C for
+// -45..60°C. Same family of formula the heat index above is tuned from.
+function dewPointCelsius(tempC: number, humidity: number): number {
+  const a = 17.625;
+  const b = 243.04;
+  const gamma = Math.log(humidity / 100) + (a * tempC) / (b + tempC);
+  return (b * gamma) / (a - gamma);
+}
+
+// Saturation vapor pressure (Magnus formula) scaled to actual vapor
+// pressure by RH, then converted to a mass concentration via the ideal gas
+// law for water vapor. Returns grams of water vapor per cubic meter of air.
+function absoluteHumidity(tempC: number, humidity: number): number {
+  const satVaporPressureHpa = 6.112 * Math.exp((17.67 * tempC) / (tempC + 243.5));
+  const vaporPressureHpa = (humidity / 100) * satVaporPressureHpa;
+  return (216.7 * vaporPressureHpa) / (tempC + 273.15);
+}
+
 function formatTime(reading: Reading, timezone: string) {
   if (!reading.timestampMs) return "No timestamp";
   return new Intl.DateTimeFormat("en-US", {
@@ -801,6 +819,13 @@ function StatusCard({
   const displayHeat =
     heatC === null ? null : useFahrenheit ? toFahrenheit(heatC) : heatC;
 
+  const dewPointC =
+    currentTempC === null || humidity === null ? null : dewPointCelsius(currentTempC, humidity);
+  const displayDewPoint =
+    dewPointC === null ? null : useFahrenheit ? toFahrenheit(dewPointC) : dewPointC;
+  const absHumidity =
+    currentTempC === null || humidity === null ? null : absoluteHumidity(currentTempC, humidity);
+
   // Clamp the marker so it sits inside the gauge for any input.
   const markerPct = humidity === null ? null : Math.max(0, Math.min(100, humidity));
 
@@ -838,6 +863,16 @@ function StatusCard({
           <span className="comfort-comfort">Comfort</span>
           <span className="comfort-wet">Wet</span>
         </div>
+      </div>
+      <div className="extra-metrics">
+        <span>
+          <span className="extra-metric-label">Dew point</span>{" "}
+          {displayDewPoint === null ? "--" : `${formatNumber(displayDewPoint)}°${tempUnit}`}
+        </span>
+        <span>
+          <span className="extra-metric-label">Absolute humidity</span>{" "}
+          {absHumidity === null ? "--" : `${formatNumber(absHumidity)} g/m³`}
+        </span>
       </div>
     </section>
   );

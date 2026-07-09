@@ -16,6 +16,27 @@ const ALL_ROWS = Array.from({ length: TOTAL }, (_, i) => {
   };
 });
 
+// A second device, interleaved with ALL_ROWS but at a jittered (not exactly
+// regular) offset — closer to real-world timing than a fixed offset, so a
+// global (rather than per-device) stride bug can't get lucky and produce an
+// evenly-alternating pick by coincidence.
+const TOTAL_B = 800;
+const DEVICE_B_ROWS = Array.from({ length: TOTAL_B }, (_, i) => {
+  const jitterMs = ((i * 37) % 50) * 1000;
+  const t = new Date(NOW - i * 60_000 - jitterMs);
+  return {
+    id: 100_000 + TOTAL_B - i,
+    device_id: "TP357 (TEST)",
+    temperature: 22 + Math.cos(i / 8),
+    humidity: 45 + Math.sin(i / 8),
+    device_ts: t.toISOString(),
+    received_at: t.toISOString(),
+  };
+});
+const MULTI_DEVICE_ROWS = [...ALL_ROWS, ...DEVICE_B_ROWS].sort(
+  (a, b) => Date.parse(b.received_at) - Date.parse(a.received_at),
+);
+
 function jsonResponse(body: unknown, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
     status: 200,
@@ -23,24 +44,39 @@ function jsonResponse(body: unknown, headers: Record<string, string> = {}) {
   });
 }
 
+// Mirrors the real (fixed) readings_downsampled SQL function: the stride is
+// computed independently per device_id, not across the whole combined set.
 function downsample(rows: typeof ALL_ROWS, targetPoints: number) {
-  if (rows.length <= targetPoints) return rows;
-  const stride = Math.ceil(rows.length / targetPoints);
-  return rows.filter((_, i) => i % stride === 0);
+  const byDevice = new Map<string, typeof ALL_ROWS>();
+  for (const r of rows) {
+    const list = byDevice.get(r.device_id) ?? [];
+    list.push(r);
+    byDevice.set(r.device_id, list);
+  }
+  const out: typeof ALL_ROWS = [];
+  for (const deviceRows of byDevice.values()) {
+    if (deviceRows.length <= targetPoints) {
+      out.push(...deviceRows);
+    } else {
+      const stride = Math.ceil(deviceRows.length / targetPoints);
+      out.push(...deviceRows.filter((_, i) => i % stride === 0));
+    }
+  }
+  return out.sort((a, b) => Date.parse(b.received_at) - Date.parse(a.received_at));
 }
 
 // Mirrors the real Supabase project's behavior as observed in manual
 // testing: table/RPC responses honor an explicit `limit`/page_offset, and
 // `Prefer: count=exact` returns the true row count via Content-Range even
 // when the body itself is capped.
-function makeMockFetch() {
+function makeMockFetch(sourceRows: typeof ALL_ROWS = ALL_ROWS) {
   return vi.fn((url: string, init?: RequestInit) => {
     const u = new URL(url);
     const headers = new Headers(init?.headers);
 
     if (u.pathname === "/rest/v1/rpc/readings_downsampled") {
       const body = JSON.parse(init!.body as string);
-      let rows = ALL_ROWS;
+      let rows = sourceRows;
       if (body.cutoff) {
         const cutoffMs = Date.parse(body.cutoff);
         rows = rows.filter((r) => Date.parse(r.received_at) >= cutoffMs);
@@ -53,7 +89,7 @@ function makeMockFetch() {
     if (u.pathname === "/rest/v1/readings") {
       if (headers.get("Prefer") === "count=exact") {
         const cutoffParam = u.searchParams.get("received_at");
-        let rows = ALL_ROWS;
+        let rows = sourceRows;
         if (cutoffParam?.startsWith("gte.")) {
           const cutoffMs = Date.parse(cutoffParam.slice(4));
           rows = rows.filter((r) => Date.parse(r.received_at) >= cutoffMs);
@@ -66,13 +102,13 @@ function makeMockFetch() {
       // Legacy bare-limit path: raw pagination via Range headers.
       const rangeHeader = headers.get("Range");
       let from = 0;
-      let to = ALL_ROWS.length - 1;
+      let to = sourceRows.length - 1;
       if (rangeHeader) {
         const [f, t] = rangeHeader.split("-").map(Number);
         from = f;
         to = t;
       }
-      return Promise.resolve(jsonResponse(ALL_ROWS.slice(from, to + 1)));
+      return Promise.resolve(jsonResponse(sourceRows.slice(from, to + 1)));
     }
 
     return Promise.resolve(new Response("not found", { status: 404 }));
@@ -115,6 +151,37 @@ describe("lib/db", () => {
     expect(result.readings.length).toBeGreaterThan(1000);
     const ids = result.readings.map((r) => r.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("downsamples each device independently instead of by a shared global stride", async () => {
+    vi.stubGlobal("fetch", makeMockFetch(MULTI_DEVICE_ROWS));
+    const { loadReadings } = await import("./db");
+    const result = await loadReadings({ rangeHours: null, limit: Number.MAX_SAFE_INTEGER, maxPoints: 2000 });
+
+    const byDevice = new Map<string, number[]>();
+    for (const r of result.readings) {
+      const list = byDevice.get(r.deviceId) ?? [];
+      list.push(r.timestampMs as number);
+      byDevice.set(r.deviceId, list);
+    }
+
+    // Device A (2500 raw rows) needs downsampling (stride 2 -> 1250 points);
+    // device B (800 raw rows) doesn't and should come through untouched. A
+    // shared global stride computed across both interleaved devices would
+    // skew this split and/or cluster each device's own points unevenly,
+    // instead of spacing them out across its own full time range.
+    expect(byDevice.get("AA:BB:CC:DD:EE:FF")).toHaveLength(1250);
+    expect(byDevice.get("TP357 (TEST)")).toHaveLength(TOTAL_B);
+
+    // Device A's sampled points should be evenly spaced (uniform 2-minute
+    // gaps), not clustered — this is what the bug actually looked like on
+    // the live dashboard: bursts of points separated by gaps.
+    const deviceATimestamps = byDevice.get("AA:BB:CC:DD:EE:FF")!.slice().sort((a, b) => a - b);
+    const gaps = new Set<number>();
+    for (let i = 1; i < deviceATimestamps.length; i++) {
+      gaps.add(deviceATimestamps[i] - deviceATimestamps[i - 1]);
+    }
+    expect(gaps.size).toBe(1); // exactly one distinct gap size = perfectly even spacing
   });
 
   it("requests each downsample page with an increasing page_offset", async () => {

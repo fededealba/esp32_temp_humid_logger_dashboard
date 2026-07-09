@@ -41,6 +41,13 @@ create policy "anon can insert readings"
 -- thin it out in JS. Keeps "all time" / large-range queries fast and
 -- payload-bounded no matter how big the table grows.
 --
+-- The stride is computed per device_id (partition by), not globally: with
+-- two or more devices interleaved in time, a single global stride picks
+-- rows without regard to which device they belong to, so each device's own
+-- line ends up with uneven clusters and gaps instead of a smooth series —
+-- this was live and broken for a full day before being caught. Each device
+-- independently gets up to target_points rows.
+--
 -- page_offset/page_limit are handled inside the function (not via
 -- PostgREST's Range header) because PostgREST does not paginate `setof`
 -- RPC results reliably — every page request silently returned the same
@@ -58,8 +65,8 @@ as $$
   with base as (
     select
       r.*,
-      row_number() over (order by r.received_at desc) - 1 as rn,
-      count(*) over () as total
+      row_number() over (partition by r.device_id order by r.received_at desc) - 1 as rn,
+      count(*) over (partition by r.device_id) as total
     from public.readings r
     where cutoff is null or r.received_at >= cutoff
   ),

@@ -16,6 +16,12 @@ const PAGE_SIZE = 1_000;
 // bounded by definition; the range/all paths downsample in Postgres instead
 // of paginating the whole table.
 const MAX_ROWS = 20_000;
+// Safety ceiling for fetchDownsampled's pagination loop. readings_downsampled
+// caps each *device* at target_points rows (not the whole response), so the
+// total across N devices can be up to target_points * N — this bound is
+// independent of target_points so it doesn't silently truncate as more
+// devices are added, while still capping worst-case request count.
+const MAX_DOWNSAMPLED_ROWS = 20_000;
 
 function getConfig(): { url: string; key: string } | null {
   const url = process.env.SUPABASE_URL;
@@ -111,12 +117,15 @@ async function fetchDownsampled(
   // PostgREST doesn't paginate `setof` RPC results via Range headers (it
   // silently returned the same first chunk on every page when tested), so
   // page_offset/page_limit are function arguments handled inside the SQL
-  // instead. Still bounded by targetPoints (a small constant), not table
-  // size, which is the whole point of downsampling in SQL.
+  // instead. The loop bound is MAX_DOWNSAMPLED_ROWS, not targetPoints: the
+  // SQL function caps each device at targetPoints rows independently, so
+  // the total response can exceed targetPoints once there's more than one
+  // device — bounding this loop by targetPoints alone would silently drop
+  // later devices' data.
   const url = `${config.url}/rest/v1/rpc/readings_downsampled`;
   const rows: SupabaseRow[] = [];
-  for (let offset = 0; offset < targetPoints; offset += PAGE_SIZE) {
-    const pageLimit = Math.min(PAGE_SIZE, targetPoints - offset);
+  for (let offset = 0; offset < MAX_DOWNSAMPLED_ROWS; offset += PAGE_SIZE) {
+    const pageLimit = PAGE_SIZE;
     const res = await fetch(url, {
       method: "POST",
       headers: {

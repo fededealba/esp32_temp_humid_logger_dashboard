@@ -187,6 +187,17 @@ input {
 .status-metric.heat .status-value { color: #ca8a04; }
 .status-metric.humidity .status-value { color: var(--humidity); }
 
+.trend-arrow {
+  display: inline-block;
+  font-size: 18px;
+  font-weight: 400;
+  margin-left: 4px;
+  vertical-align: 4px;
+  /* inherits the metric's own color (var(--temp) / var(--humidity)) from
+     .status-value rather than a separate good/bad status color, since
+     there's no universally "good" direction for temperature or humidity */
+}
+
 .status-label {
   margin-top: 6px;
   color: var(--muted);

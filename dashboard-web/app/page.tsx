@@ -169,6 +169,55 @@ function ratePerMinute(timestamps: number[], values: number[]): number | null {
   return den === 0 ? null : num / den;
 }
 
+// Trend classification for the status card: slope of the last 10 minutes
+// of readings, bucketed into up/down/stable. Needs a handful of points
+// spread over a real span, not just two nearly-simultaneous ones, or the
+// slope is noise; below the threshold, small drift is treated as sensor
+// jitter rather than a real trend (thresholds sit above the DHT22's typical
+// reading-to-reading jitter, observed as ~0.1-0.3% humidity per reading).
+const TREND_WINDOW_MS = 10 * 60 * 1000;
+const TREND_MIN_POINTS = 3;
+const TREND_MIN_SPAN_MS = 3 * 60 * 1000;
+const TEMP_TREND_THRESHOLD_C = 0.02; // °C/min
+const HUMIDITY_TREND_THRESHOLD = 0.05; // %/min
+
+type Trend = "up" | "down" | "stable" | null;
+
+function classifyTrend(slope: number | null, threshold: number): Trend {
+  if (slope === null) return null;
+  if (slope > threshold) return "up";
+  if (slope < -threshold) return "down";
+  return "stable";
+}
+
+// Direction is invariant under the C->F conversion (a positive linear
+// scale), so trends are always computed in the raw stored Celsius/percent
+// units regardless of the display unit toggle.
+function deviceTrends(recentReadings: Reading[]): { temp: Trend; humidity: Trend } {
+  if (recentReadings.length < TREND_MIN_POINTS) return { temp: null, humidity: null };
+  const sorted = recentReadings.slice().sort((a, b) => (a.timestampMs ?? 0) - (b.timestampMs ?? 0));
+  const span = (sorted[sorted.length - 1].timestampMs ?? 0) - (sorted[0].timestampMs ?? 0);
+  if (span < TREND_MIN_SPAN_MS) return { temp: null, humidity: null };
+  const timestamps = sorted.map((r) => r.timestampMs as number);
+  const tempSlope = ratePerMinute(timestamps, sorted.map((r) => r.temperature));
+  const humiditySlope = ratePerMinute(timestamps, sorted.map((r) => r.humidity));
+  return {
+    temp: classifyTrend(tempSlope, TEMP_TREND_THRESHOLD_C),
+    humidity: classifyTrend(humiditySlope, HUMIDITY_TREND_THRESHOLD),
+  };
+}
+
+function TrendArrow({ trend }: { trend: Trend }) {
+  if (trend === null) return null;
+  const symbol = trend === "up" ? "▲" : trend === "down" ? "▼" : "→";
+  const label = trend === "up" ? "increasing" : trend === "down" ? "decreasing" : "stable";
+  return (
+    <span className="trend-arrow" title={`${label} over the last 10 min`} aria-label={label}>
+      {symbol}
+    </span>
+  );
+}
+
 type PlotlyApi = typeof import("plotly.js");
 
 // The div Plotly.react attaches to gets `on`/`removeAllListeners` methods
@@ -803,10 +852,14 @@ function StatusCard({
   currentTempC,
   humidity,
   useFahrenheit,
+  tempTrend = null,
+  humidityTrend = null,
 }: {
   currentTempC: number | null;
   humidity: number | null;
   useFahrenheit: boolean;
+  tempTrend?: Trend;
+  humidityTrend?: Trend;
 }) {
   const tempUnit = useFahrenheit ? "F" : "C";
   const displayTemp =
@@ -835,6 +888,7 @@ function StatusCard({
         <div className="status-metric temp">
           <div className="status-value">
             {displayTemp === null ? "--" : `${formatNumber(displayTemp)}°${tempUnit}`}
+            <TrendArrow trend={tempTrend} />
           </div>
           <div className="status-label">Temperature</div>
         </div>
@@ -849,6 +903,7 @@ function StatusCard({
         <div className="status-metric humidity">
           <div className="status-value">
             {humidity === null ? "--" : `${formatNumber(humidity)}%`}
+            <TrendArrow trend={humidityTrend} />
           </div>
           <div className="status-label">Humidity</div>
         </div>
@@ -959,6 +1014,24 @@ export default function Page() {
   }, [filtered]);
   const showPerDeviceStatus = device === "all" && devices.length > 1;
 
+  // Per-device trend (last 10 min), independent of the device filter above
+  // so it stays available regardless of which device's chart is showing.
+  const trendByDevice = useMemo(() => {
+    const cutoff = Date.now() - TREND_WINDOW_MS;
+    const recentByDevice = new Map<string, Reading[]>();
+    for (const reading of readings) {
+      if (reading.timestampMs === null || reading.timestampMs < cutoff) continue;
+      const list = recentByDevice.get(reading.deviceId) ?? [];
+      list.push(reading);
+      recentByDevice.set(reading.deviceId, list);
+    }
+    const map = new Map<string, { temp: Trend; humidity: Trend }>();
+    for (const [deviceId, recent] of recentByDevice) {
+      map.set(deviceId, deviceTrends(recent));
+    }
+    return map;
+  }, [readings]);
+
   // Max/Min for each chart header. Computed in the displayed unit so the
   // labels match what the user sees in the chart.
   const tempStats = useMemo(() => {
@@ -1061,6 +1134,7 @@ export default function Page() {
         <div className="status-card-group">
           {devices.map((deviceId) => {
             const reading = latestByDevice.get(deviceId) ?? null;
+            const trend = trendByDevice.get(deviceId);
             return (
               <div key={deviceId} className="status-card-item">
                 <div className="status-card-item-label">{deviceId}</div>
@@ -1068,6 +1142,8 @@ export default function Page() {
                   currentTempC={reading ? reading.temperature : null}
                   humidity={reading ? reading.humidity : null}
                   useFahrenheit={useFahrenheit}
+                  tempTrend={trend?.temp}
+                  humidityTrend={trend?.humidity}
                 />
               </div>
             );
@@ -1078,6 +1154,8 @@ export default function Page() {
           currentTempC={latest ? latest.temperature : null}
           humidity={latest ? latest.humidity : null}
           useFahrenheit={useFahrenheit}
+          tempTrend={trendByDevice.get(latest?.deviceId ?? "")?.temp}
+          humidityTrend={trendByDevice.get(latest?.deviceId ?? "")?.humidity}
         />
       )}
 

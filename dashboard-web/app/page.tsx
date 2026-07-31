@@ -179,7 +179,10 @@ const TREND_WINDOW_MS = 10 * 60 * 1000;
 const TREND_MIN_POINTS = 3;
 const TREND_MIN_SPAN_MS = 3 * 60 * 1000;
 const TEMP_TREND_THRESHOLD_C = 0.02; // °C/min
-const HUMIDITY_TREND_THRESHOLD = 0.05; // %/min
+// 0.05 was too sensitive in practice: a real DHT22 sample (42.6-43.6% over
+// 10 min, mostly noise with only a slight uptick in the last few readings)
+// regressed to a 0.09 %/min slope and read as "up" when it visibly wasn't.
+const HUMIDITY_TREND_THRESHOLD = 0.15; // %/min
 
 type Trend = "up" | "down" | "stable" | null;
 

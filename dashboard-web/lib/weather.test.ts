@@ -86,76 +86,129 @@ describe("lib/weather", () => {
 });
 
 describe("lib/weather history", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    delete process.env.SUPABASE_URL;
-    delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  beforeEach(() => {
+    process.env.OPEN_METEO_LATITUDE = "48.885";
+    process.env.OPEN_METEO_LONGITUDE = "2.316";
   });
 
-  it("returns an empty list when Supabase is not configured", async () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    delete process.env.OPEN_METEO_LATITUDE;
+    delete process.env.OPEN_METEO_LONGITUDE;
+  });
+
+  function hourlyResponse(times: string[], temps: number[], hums: number[]) {
+    return jsonResponse({ hourly: { time: times, temperature_2m: temps, relative_humidity_2m: hums } });
+  }
+
+  it("returns an empty list when Open-Meteo is not configured", async () => {
+    delete process.env.OPEN_METEO_LATITUDE;
     const { loadOfficialWeatherHistory } = await import("./weather");
     expect(await loadOfficialWeatherHistory(24)).toEqual([]);
   });
 
-  it("sorts rows ascending regardless of the order Supabase returns them in", async () => {
-    process.env.SUPABASE_URL = "https://example.supabase.co";
-    process.env.SUPABASE_SERVICE_ROLE_KEY = "test-key";
+  it("maps hourly arrays into points with ISO instants", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-10T15:30:00Z"));
     vi.stubGlobal(
       "fetch",
       vi.fn(() =>
         Promise.resolve(
-          jsonResponse([
-            { temperature: 3, humidity: 50, observed_at: "2026-07-01T02:00:00Z" },
-            { temperature: 1, humidity: 50, observed_at: "2026-07-01T00:00:00Z" },
-            { temperature: 2, humidity: 50, observed_at: "2026-07-01T01:00:00Z" },
-          ]),
+          hourlyResponse(
+            ["2026-08-10T13:00", "2026-08-10T14:00", "2026-08-10T15:00"],
+            [28.1, 29.2, 30.3],
+            [40, 41, 42],
+          ),
         ),
       ),
     );
     const { loadOfficialWeatherHistory } = await import("./weather");
     const result = await loadOfficialWeatherHistory(null);
-    expect(result.map((r) => r.temperature)).toEqual([1, 2, 3]);
+    expect(result).toEqual([
+      { temperature: 28.1, humidity: 40, observedAt: "2026-08-10T13:00:00.000Z" },
+      { temperature: 29.2, humidity: 41, observedAt: "2026-08-10T14:00:00.000Z" },
+      { temperature: 30.3, humidity: 42, observedAt: "2026-08-10T15:00:00.000Z" },
+    ]);
   });
 
-  it("applies the range_hours cutoff as an observed_at filter", async () => {
-    process.env.SUPABASE_URL = "https://example.supabase.co";
-    process.env.SUPABASE_SERVICE_ROLE_KEY = "test-key";
+  it("drops hourly points beyond the current time (the forecast_days=1 buffer)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-10T15:30:00Z"));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          hourlyResponse(["2026-08-10T15:00", "2026-08-10T16:00", "2026-08-10T17:00"], [30, 31, 32], [40, 41, 42]),
+        ),
+      ),
+    );
+    const { loadOfficialWeatherHistory } = await import("./weather");
+    const result = await loadOfficialWeatherHistory(null);
+    expect(result.map((p) => p.observedAt)).toEqual(["2026-08-10T15:00:00.000Z"]);
+  });
+
+  it("applies the rangeHours cutoff", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-10T15:30:00Z"));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          hourlyResponse(
+            ["2026-08-10T12:00", "2026-08-10T13:00", "2026-08-10T14:00", "2026-08-10T15:00"],
+            [1, 2, 3, 4],
+            [40, 40, 40, 40],
+          ),
+        ),
+      ),
+    );
+    const { loadOfficialWeatherHistory } = await import("./weather");
+    // 2h range from a 15:30 "now" -> cutoff 13:30, so 12:00 and 13:00 drop out.
+    const result = await loadOfficialWeatherHistory(2);
+    expect(result.map((p) => p.observedAt)).toEqual(["2026-08-10T14:00:00.000Z", "2026-08-10T15:00:00.000Z"]);
+  });
+
+  it.each([
+    [24, "1"],
+    [200, "9"],
+    [null, "92"],
+  ])("converts rangeHours=%s to past_days=%s", async (rangeHours, expectedPastDays) => {
     let requestedUrl = "";
     vi.stubGlobal(
       "fetch",
       vi.fn((url: string) => {
         requestedUrl = url;
-        return Promise.resolve(jsonResponse([]));
+        return Promise.resolve(hourlyResponse([], [], []));
+      }),
+    );
+    const { loadOfficialWeatherHistory } = await import("./weather");
+    await loadOfficialWeatherHistory(rangeHours);
+    const params = new URL(requestedUrl).searchParams;
+    expect(params.get("past_days")).toBe(expectedPastDays);
+  });
+
+  it("rounds coordinates to 3 decimals before calling Open-Meteo", async () => {
+    process.env.OPEN_METEO_LATITUDE = "48.8850833";
+    process.env.OPEN_METEO_LONGITUDE = "2.3158611";
+    let requestedUrl = "";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        requestedUrl = url;
+        return Promise.resolve(hourlyResponse([], [], []));
       }),
     );
     const { loadOfficialWeatherHistory } = await import("./weather");
     await loadOfficialWeatherHistory(24);
     const params = new URL(requestedUrl).searchParams;
-    expect(params.get("observed_at")).toMatch(/^gte\./);
-  });
-
-  it("omits the observed_at filter for an unbounded (null) range", async () => {
-    process.env.SUPABASE_URL = "https://example.supabase.co";
-    process.env.SUPABASE_SERVICE_ROLE_KEY = "test-key";
-    let requestedUrl = "";
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((url: string) => {
-        requestedUrl = url;
-        return Promise.resolve(jsonResponse([]));
-      }),
-    );
-    const { loadOfficialWeatherHistory } = await import("./weather");
-    await loadOfficialWeatherHistory(null);
-    const params = new URL(requestedUrl).searchParams;
-    expect(params.has("observed_at")).toBe(false);
+    expect(params.get("latitude")).toBe("48.885");
+    expect(params.get("longitude")).toBe("2.316");
   });
 
   it("throws a descriptive error on a non-OK response", async () => {
-    process.env.SUPABASE_URL = "https://example.supabase.co";
-    process.env.SUPABASE_SERVICE_ROLE_KEY = "test-key";
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response("boom", { status: 500 }))));
     const { loadOfficialWeatherHistory } = await import("./weather");
-    await expect(loadOfficialWeatherHistory(24)).rejects.toThrow(/Supabase/);
+    await expect(loadOfficialWeatherHistory(24)).rejects.toThrow(/Open-Meteo/);
   });
 });

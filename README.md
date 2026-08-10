@@ -232,29 +232,6 @@ Setup:
 Trigger a manual run from the Actions tab (or `gh workflow run stale-check.yml`)
 to test it without waiting for the schedule.
 
-6d) Log official weather history (optional, needs Supabase + Open-Meteo)
-
-`.github/workflows/log-weather.yml` runs `scripts/log-weather.mjs` every 30
-minutes via GitHub Actions. It fetches the current outdoor temperature and
-humidity from Open-Meteo for the configured location and logs one row to
-Supabase, so the dashboard's temperature chart can plot a "Official" history
-line alongside your sensors instead of only showing the live current value in
-the status card. Safe to run more often than Open-Meteo's own data changes
-(every 15-60 min) — the `official_weather.observed_at` unique constraint
-makes re-polling before it has advanced a no-op instead of a duplicate row.
-
-Setup:
-
-- Run `scripts/supabase-schema.sql` again if you haven't already since this
-  file added the `official_weather` table the script depends on.
-- Add two more repository secrets (Settings → Secrets and variables →
-  Actions): `OPEN_METEO_LATITUDE`, `OPEN_METEO_LONGITUDE` — same rounded
-  values as the Vercel dashboard's env vars. `SUPABASE_URL` and
-  `SUPABASE_SERVICE_ROLE_KEY` are already set from step 6c.
-
-Trigger a manual run from the Actions tab (or `gh workflow run log-weather.yml`)
-to seed the first data point without waiting for the schedule.
-
 Firmware Workflow
 -----------------
 
@@ -339,9 +316,10 @@ are relative to `dashboard-web/`).
 - `lib/db.ts`: Supabase REST (PostgREST) loading, windowing, and downsampling.
 - `lib/sheets.ts`: Google Sheets authentication, loading, and normalization.
 - `app/api/weather/route.ts`, `app/api/weather/history/route.ts`, and
-  `lib/weather.ts`: optional Open-Meteo "official" reading (and its logged
-  history, from `scripts/log-weather.mjs`) for the configured location,
-  cached for several minutes.
+  `lib/weather.ts`: optional Open-Meteo "official" current reading and
+  history (fetched live via `past_days`, up to 93 days in one call — no
+  separate logging job) for the configured location, cached for several
+  minutes.
 - `plotly.d.ts`: type shim mapping `plotly.js-basic-dist-min` to `plotly.js` types.
 - `.env.example`: local and Vercel environment variable template.
 
@@ -357,10 +335,10 @@ The Vercel dashboard includes:
   more than 5 minutes old (the ESP32 posts every ~60s).
 - Optional "official" outdoor temperature/humidity from Open-Meteo, shown next
   to each device's reading with the delta between them, when
-  `OPEN_METEO_LATITUDE`/`OPEN_METEO_LONGITUDE` are set. When
-  `scripts/log-weather.mjs` is also logging history to Supabase (see "Log
-  official weather history" below), the temperature chart overlays it as a
-  dotted reference line.
+  `OPEN_METEO_LATITUDE`/`OPEN_METEO_LONGITUDE` are set. The temperature chart
+  also overlays up to 93 days of Open-Meteo's own history as a dotted
+  reference line — fetched live, no separate logging job or database table
+  involved.
 - Server-side Google Sheets access, so service account credentials are not
   exposed to the browser.
 

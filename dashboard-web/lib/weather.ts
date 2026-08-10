@@ -1,15 +1,7 @@
-import { getSupabaseConfig } from "./db";
-
 export type OfficialWeather = {
   temperature: number;
   humidity: number;
   observedAt: string;
-};
-
-type OfficialWeatherRow = {
-  temperature: number;
-  humidity: number;
-  observed_at: string;
 };
 
 type OpenMeteoCurrentResponse = {
@@ -20,10 +12,21 @@ type OpenMeteoCurrentResponse = {
   };
 };
 
+type OpenMeteoHourlyResponse = {
+  hourly?: {
+    time?: string[];
+    temperature_2m?: number[];
+    relative_humidity_2m?: number[];
+  };
+};
+
 // Open-Meteo's free forecast API; no API key required at this call volume
-// (the route's own Cache-Control keeps this well under the 10,000/day
+// (the routes' own Cache-Control keeps this well under the 10,000/day
 // non-commercial limit).
 const FORECAST_URL = "https://api.open-meteo.com/v1/forecast";
+// Confirmed empirically: requesting past_days beyond this errors with
+// "Past days is invalid. Allowed range 0 to 93."
+const MAX_PAST_DAYS = 92;
 
 function getConfig(): { latitude: number; longitude: number } | null {
   const latRaw = process.env.OPEN_METEO_LATITUDE;
@@ -74,38 +77,53 @@ export async function loadOfficialWeather(): Promise<OfficialWeather> {
   return { temperature, humidity, observedAt };
 }
 
-// History logged by scripts/log-weather.mjs (one row every ~30 min), read
-// back for the temperature chart overlay. Unlike lib/db.ts's readings, this
-// table grows slowly enough (~48 rows/day) that it doesn't need stride
-// downsampling -- ordering newest-first with a generous cap, then
-// re-sorting ascending, is enough to guarantee recent data is never
-// truncated even if the table eventually grows past the cap.
-const HISTORY_ROW_CAP = 5000;
-
+// History for the temperature chart overlay, fetched directly from
+// Open-Meteo's hourly + past_days rather than from a self-maintained log: a
+// single call returns up to 93 days of hourly history, which is both
+// simpler and more reliable than polling on a schedule ever was (GitHub's
+// `schedule` trigger saw 50-130 min gaps on a workflow configured for every
+// 5 min -- see the comment on stale-check.yml's cron). past_days only
+// accepts whole days, so short ranges still fetch a full day and get
+// trimmed to the actual cutoff below.
 export async function loadOfficialWeatherHistory(rangeHours: number | null): Promise<OfficialWeather[]> {
-  const config = getSupabaseConfig();
+  const config = getConfig();
   if (!config) return [];
 
+  const pastDays =
+    rangeHours === null ? MAX_PAST_DAYS : Math.min(MAX_PAST_DAYS, Math.max(1, Math.ceil(rangeHours / 24)));
+
   const params = new URLSearchParams({
-    select: "temperature,humidity,observed_at",
-    order: "observed_at.desc",
-    limit: String(HISTORY_ROW_CAP),
+    latitude: config.latitude.toFixed(3),
+    longitude: config.longitude.toFixed(3),
+    hourly: "temperature_2m,relative_humidity_2m",
+    past_days: String(pastDays),
+    forecast_days: "1",
+    timezone: "UTC",
   });
-  if (rangeHours !== null && rangeHours > 0) {
-    const cutoffIso = new Date(Date.now() - rangeHours * 3_600_000).toISOString();
-    params.append("observed_at", `gte.${cutoffIso}`);
-  }
 
-  const res = await fetch(`${config.url}/rest/v1/official_weather?${params}`, {
-    headers: { apikey: config.key, Authorization: `Bearer ${config.key}` },
-    cache: "no-store",
-  });
+  const res = await fetch(`${FORECAST_URL}?${params}`, { cache: "no-store" });
   if (!res.ok) {
-    throw new Error(`Supabase returned ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    throw new Error(`Open-Meteo returned ${res.status}: ${(await res.text()).slice(0, 300)}`);
   }
 
-  const rows = (await res.json()) as OfficialWeatherRow[];
-  return rows
-    .map((row) => ({ temperature: row.temperature, humidity: row.humidity, observedAt: row.observed_at }))
-    .sort((a, b) => Date.parse(a.observedAt) - Date.parse(b.observedAt));
+  const body = (await res.json()) as OpenMeteoHourlyResponse;
+  const times = body.hourly?.time ?? [];
+  const temps = body.hourly?.temperature_2m ?? [];
+  const hums = body.hourly?.relative_humidity_2m ?? [];
+
+  const nowMs = Date.now();
+  const cutoffMs = rangeHours !== null && rangeHours > 0 ? nowMs - rangeHours * 3_600_000 : null;
+
+  const points: OfficialWeather[] = [];
+  for (let i = 0; i < times.length; i++) {
+    const temperature = temps[i];
+    const humidity = hums[i];
+    if (typeof temperature !== "number" || typeof humidity !== "number") continue;
+    const ms = Date.parse(`${times[i]}Z`);
+    if (!Number.isFinite(ms)) continue;
+    if (ms > nowMs) continue; // forecast_days=1 buffer can include future hours
+    if (cutoffMs !== null && ms < cutoffMs) continue;
+    points.push({ temperature, humidity, observedAt: new Date(ms).toISOString() });
+  }
+  return points;
 }

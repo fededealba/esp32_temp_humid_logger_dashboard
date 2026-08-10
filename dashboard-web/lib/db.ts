@@ -23,14 +23,16 @@ const MAX_ROWS = 20_000;
 // devices are added, while still capping worst-case request count.
 const MAX_DOWNSAMPLED_ROWS = 20_000;
 
-function getConfig(): { url: string; key: string } | null {
+// Exported so lib/weather.ts can read official_weather history through the
+// same Supabase project without duplicating env var handling.
+export function getSupabaseConfig(): { url: string; key: string } | null {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   return url && key ? { url, key } : null;
 }
 
 export function isSupabaseConfigured(): boolean {
-  return getConfig() !== null;
+  return getSupabaseConfig() !== null;
 }
 
 function toReading(row: SupabaseRow): Reading {
@@ -155,7 +157,7 @@ async function fetchDownsampled(
 export async function loadReadings(
   options: LoadReadingsOptions = {},
 ): Promise<ReadingsResponse> {
-  const config = getConfig();
+  const config = getSupabaseConfig();
   if (!config) throw new Error("Supabase is not configured.");
 
   const { rangeHours = null, limit = 5000, maxPoints = 2000 } = options;

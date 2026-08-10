@@ -1,0 +1,21 @@
+name: Log official weather
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  log:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: node scripts/log-weather.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          OPEN_METEO_LATITUDE: ${{ secrets.OPEN_METEO_LATITUDE }}
+          OPEN_METEO_LONGITUDE: ${{ secrets.OPEN_METEO_LONGITUDE }}

@@ -98,3 +98,25 @@ values (1, false)
 on conflict (id) do nothing;
 
 alter table public.alert_state enable row level security;
+
+-- Historical log of the "official" outdoor reading from Open-Meteo, written
+-- by scripts/log-weather.mjs on a schedule (see
+-- .github/workflows/log-weather.yml) so the dashboard can chart it alongside
+-- the ESP32's own readings instead of only showing the live current value.
+-- observed_at is unique so re-polling Open-Meteo before its own data has
+-- advanced (it only updates every 15-60 min) is a no-op instead of a
+-- duplicate row.
+create table if not exists public.official_weather (
+  id bigint generated always as identity primary key,
+  temperature double precision not null,
+  humidity double precision not null,
+  observed_at timestamptz not null unique,
+  received_at timestamptz not null default now()
+);
+
+create index if not exists official_weather_observed_at_idx
+  on public.official_weather (observed_at desc);
+
+-- No policies: only the service_role key (which bypasses RLS) ever touches
+-- this table, from log-weather.mjs and the dashboard's server-side reads.
+alter table public.official_weather enable row level security;

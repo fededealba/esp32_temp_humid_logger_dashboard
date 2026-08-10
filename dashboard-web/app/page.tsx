@@ -31,6 +31,21 @@ type ApiResponse =
       error: string;
     };
 
+type WeatherResponse =
+  | { ok: true; configured: false }
+  | {
+      ok: true;
+      configured: true;
+      temperature: number;
+      humidity: number;
+      observedAt: string;
+    }
+  | { ok: false; error: string };
+
+type WeatherHistoryResponse =
+  | { ok: true; points: { temperature: number; humidity: number; observedAt: string }[] }
+  | { ok: false; error: string };
+
 const TIMEZONES = [
   "Europe/Paris",
   "UTC",
@@ -77,6 +92,10 @@ const HUMIDITY_COLORS = {
 // used when there's exactly one device.
 const TEMP_FILL = { light: "rgba(194, 65, 12, 0.12)", dark: "rgba(249, 115, 22, 0.18)" };
 const HUMIDITY_FILL = { light: "rgba(8, 126, 164, 0.12)", dark: "rgba(56, 189, 248, 0.18)" };
+// Neutral (not orange/pink like TEMP_COLORS, not blue/purple like
+// HUMIDITY_COLORS) so the official reference line reads as "background
+// context" rather than another device.
+const OFFICIAL_COLOR = { light: "#78716c", dark: "#a8a29e" };
 
 function formatAge(ms: number) {
   const minutes = Math.floor(ms / 60000);
@@ -95,6 +114,13 @@ function formatNumber(value: number, digits = 1) {
 
 function toFahrenheit(celsius: number) {
   return celsius * 1.8 + 32;
+}
+
+// For a *difference* between two Celsius readings, not an absolute value —
+// skips the +32 offset (which would cancel out anyway, but this makes the
+// intent explicit at call sites instead of relying on that cancellation).
+function toFahrenheitDelta(deltaCelsius: number) {
+  return deltaCelsius * 1.8;
 }
 
 // Rothfusz regression of Steadman's heat-index table. Only meaningful above
@@ -293,6 +319,7 @@ function MetricChart({
   viewKey,
   xAxisRange,
   onXRangeChange,
+  officialSeries,
 }: {
   readings: Reading[];
   metric: "temperature" | "humidity";
@@ -301,6 +328,9 @@ function MetricChart({
   viewKey: string;
   xAxisRange?: [string, string] | null;
   onXRangeChange?: (range: [string, string] | null) => void;
+  // Temperature-only reference line from Open-Meteo history; absent/empty
+  // for the humidity chart and whenever there's no logged history yet.
+  officialSeries?: { timestampMs: number; temperature: number }[];
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const isTemp = metric === "temperature";
@@ -398,6 +428,22 @@ function MetricChart({
       };
     });
 
+    const hasOfficial = isTemp && !!officialSeries && officialSeries.length > 0;
+    if (hasOfficial) {
+      const officialColor = OFFICIAL_COLOR[isDark ? "dark" : "light"];
+      const officialValues = officialSeries!.map((p) => (useFahrenheit ? toFahrenheit(p.temperature) : p.temperature));
+      allValues.push(...officialValues);
+      data.push({
+        type: "scatter",
+        mode: "lines",
+        name: "Official",
+        x: officialSeries!.map((p) => zonedDateString(p.timestampMs, timezone)),
+        y: officialValues,
+        line: { color: officialColor, width: 1.5, dash: "dot", shape: "linear" },
+        hovertemplate: `%{y:.1f}${tempUnit}`,
+      });
+    }
+
     const yMin = allValues.length
       ? isTemp
         ? Math.min(...allValues) - 1
@@ -420,13 +466,13 @@ function MetricChart({
       autosize: true,
       height: 280,
       uirevision: `${useFahrenheit ? "f" : "c"}|${timezone}|${viewKey}`,
-      margin: { l: 56, r: 24, t: multiDevice ? 32 : 12, b: 44 },
+      margin: { l: 56, r: 24, t: multiDevice || hasOfficial ? 32 : 12, b: 44 },
       paper_bgcolor: "rgba(0,0,0,0)",
       plot_bgcolor: "rgba(0,0,0,0)",
       font: { family: "Inter, ui-sans-serif, system-ui, sans-serif", size: 12, color: fontColor },
       hovermode: "x unified",
       hoverlabel: { bgcolor: hoverBg, bordercolor: hoverBorder, font: { color: hoverFont } },
-      showlegend: multiDevice,
+      showlegend: multiDevice || hasOfficial,
       legend: { orientation: "h", y: 1.12, font: { color: fontColor, size: 11 } },
       xaxis: {
         type: "date",
@@ -481,7 +527,7 @@ function MetricChart({
     return () => {
       cancelled = true;
     };
-  }, [chartReadings, deviceIds, hasEnough, isDark, isTemp, useFahrenheit, timezone, viewKey]);
+  }, [chartReadings, deviceIds, hasEnough, isDark, isTemp, useFahrenheit, timezone, viewKey, officialSeries]);
 
   // Apply an x-axis range received from the sibling chart.
   useEffect(() => {
@@ -857,12 +903,16 @@ function StatusCard({
   useFahrenheit,
   tempTrend = null,
   humidityTrend = null,
+  official = null,
+  timezone,
 }: {
   currentTempC: number | null;
   humidity: number | null;
   useFahrenheit: boolean;
   tempTrend?: Trend;
   humidityTrend?: Trend;
+  official?: { temperature: number; humidity: number; observedAt: string } | null;
+  timezone: string;
 }) {
   const tempUnit = useFahrenheit ? "F" : "C";
   const displayTemp =
@@ -881,6 +931,20 @@ function StatusCard({
     dewPointC === null ? null : useFahrenheit ? toFahrenheit(dewPointC) : dewPointC;
   const absHumidity =
     currentTempC === null || humidity === null ? null : absoluteHumidity(currentTempC, humidity);
+
+  const displayOfficialTemp =
+    official === null ? null : useFahrenheit ? toFahrenheit(official.temperature) : official.temperature;
+  // Delta is computed in Celsius first, then scaled — converting each side
+  // to °F independently and subtracting would double-apply the +32 offset.
+  const officialDeltaC = currentTempC === null || official === null ? null : currentTempC - official.temperature;
+  const displayOfficialDelta =
+    officialDeltaC === null ? null : useFahrenheit ? toFahrenheitDelta(officialDeltaC) : officialDeltaC;
+  const officialObservedLabel =
+    official === null
+      ? null
+      : new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", timeZone: timezone }).format(
+          new Date(official.observedAt),
+        );
 
   // Clamp the marker so it sits inside the gauge for any input.
   const markerPct = humidity === null ? null : Math.max(0, Math.min(100, humidity));
@@ -931,6 +995,15 @@ function StatusCard({
           <span className="extra-metric-label">Absolute humidity</span>{" "}
           {absHumidity === null ? "--" : `${formatNumber(absHumidity)} g/m³`}
         </span>
+        {official !== null ? (
+          <span title={officialObservedLabel ? `Open-Meteo, as of ${officialObservedLabel}` : "Open-Meteo"}>
+            <span className="extra-metric-label">Official</span>{" "}
+            {displayOfficialTemp === null ? "--" : `${formatNumber(displayOfficialTemp)}°${tempUnit}`}
+            {displayOfficialDelta === null
+              ? ""
+              : ` (${displayOfficialDelta > 0 ? "+" : ""}${formatNumber(displayOfficialDelta)}°${tempUnit} vs sensor)`}
+          </span>
+        ) : null}
       </div>
     </section>
   );
@@ -946,6 +1019,8 @@ export default function Page() {
   const [timezone, setTimezone] = useState(process.env.NEXT_PUBLIC_DASHBOARD_TIMEZONE || "Europe/Paris");
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [sharedXRange, setSharedXRange] = useState<[string, string] | null>(null);
+  const [weather, setWeather] = useState<WeatherResponse | null>(null);
+  const [weatherHistory, setWeatherHistory] = useState<{ timestampMs: number; temperature: number }[]>([]);
 
   const handleXRangeChange = useCallback((range: [string, string] | null) => {
     setSharedXRange(range);
@@ -987,6 +1062,41 @@ export default function Page() {
     const interval = window.setInterval(refresh, 30000);
     return () => window.clearInterval(interval);
   }, [autoRefresh, refresh]);
+
+  // Separate from the readings poll above: the API route caches Open-Meteo
+  // responses for several minutes, so polling every 30s like the readings
+  // endpoint would just re-request the same cached value. A failure here is
+  // non-critical (the comparison simply disappears), so it's swallowed
+  // rather than surfaced through the same `error` banner as readings.
+  const refreshWeather = useCallback(async () => {
+    try {
+      const rangeParam = rangeHours === null ? "all" : String(rangeHours);
+      const [current, history] = await Promise.all([
+        fetch("/api/weather", { cache: "no-store" }).then((r) => r.json() as Promise<WeatherResponse>),
+        fetch(`/api/weather/history?range_hours=${rangeParam}`, { cache: "no-store" }).then(
+          (r) => r.json() as Promise<WeatherHistoryResponse>,
+        ),
+      ]);
+      setWeather(current);
+      if (history.ok) {
+        setWeatherHistory(
+          history.points
+            .map((p) => ({ timestampMs: Date.parse(p.observedAt), temperature: p.temperature }))
+            .filter((p) => Number.isFinite(p.timestampMs)),
+        );
+      }
+    } catch {
+      // Keep whatever was last loaded.
+    }
+  }, [rangeHours]);
+
+  useEffect(() => {
+    refreshWeather();
+    const interval = window.setInterval(refreshWeather, 5 * 60000);
+    return () => window.clearInterval(interval);
+  }, [refreshWeather]);
+
+  const official = weather?.ok && weather.configured ? weather : null;
 
   const readings = data?.ok ? data.readings : [];
   const devices = useMemo(() => {
@@ -1147,6 +1257,8 @@ export default function Page() {
                   useFahrenheit={useFahrenheit}
                   tempTrend={trend?.temp}
                   humidityTrend={trend?.humidity}
+                  official={official}
+                  timezone={timezone}
                 />
               </div>
             );
@@ -1159,6 +1271,8 @@ export default function Page() {
           useFahrenheit={useFahrenheit}
           tempTrend={trendByDevice.get(latest?.deviceId ?? "")?.temp}
           humidityTrend={trendByDevice.get(latest?.deviceId ?? "")?.humidity}
+          official={official}
+          timezone={timezone}
         />
       )}
 
@@ -1181,6 +1295,7 @@ export default function Page() {
           viewKey={viewKey}
           xAxisRange={sharedXRange}
           onXRangeChange={handleXRangeChange}
+          officialSeries={weatherHistory}
         />
       </section>
 

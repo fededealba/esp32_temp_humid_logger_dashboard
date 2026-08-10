@@ -328,9 +328,9 @@ function MetricChart({
   viewKey: string;
   xAxisRange?: [string, string] | null;
   onXRangeChange?: (range: [string, string] | null) => void;
-  // Temperature-only reference line from Open-Meteo history; absent/empty
-  // for the humidity chart and whenever there's no logged history yet.
-  officialSeries?: { timestampMs: number; temperature: number }[];
+  // Reference line from Open-Meteo history, shown on both the temperature
+  // and humidity charts; absent/empty whenever there's no history yet.
+  officialSeries?: { timestampMs: number; temperature: number; humidity: number }[];
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const isTemp = metric === "temperature";
@@ -428,10 +428,12 @@ function MetricChart({
       };
     });
 
-    const hasOfficial = isTemp && !!officialSeries && officialSeries.length > 0;
+    const hasOfficial = !!officialSeries && officialSeries.length > 0;
     if (hasOfficial) {
       const officialColor = OFFICIAL_COLOR[isDark ? "dark" : "light"];
-      const officialValues = officialSeries!.map((p) => (useFahrenheit ? toFahrenheit(p.temperature) : p.temperature));
+      const officialValues = officialSeries!.map((p) =>
+        isTemp ? (useFahrenheit ? toFahrenheit(p.temperature) : p.temperature) : p.humidity,
+      );
       allValues.push(...officialValues);
       data.push({
         type: "scatter",
@@ -440,7 +442,7 @@ function MetricChart({
         x: officialSeries!.map((p) => zonedDateString(p.timestampMs, timezone)),
         y: officialValues,
         line: { color: officialColor, width: 1.5, dash: "dot", shape: "linear" },
-        hovertemplate: `%{y:.1f}${tempUnit}`,
+        hovertemplate: isTemp ? `%{y:.1f}${tempUnit}` : "%{y:.1f}%",
       });
     }
 
@@ -939,6 +941,8 @@ function StatusCard({
   const officialDeltaC = currentTempC === null || official === null ? null : currentTempC - official.temperature;
   const displayOfficialDelta =
     officialDeltaC === null ? null : useFahrenheit ? toFahrenheitDelta(officialDeltaC) : officialDeltaC;
+  const officialHumidityDelta =
+    humidity === null || official === null ? null : humidity - official.humidity;
   const officialObservedLabel =
     official === null
       ? null
@@ -996,13 +1000,22 @@ function StatusCard({
           {absHumidity === null ? "--" : `${formatNumber(absHumidity)} g/m³`}
         </span>
         {official !== null ? (
-          <span title={officialObservedLabel ? `Open-Meteo, as of ${officialObservedLabel}` : "Open-Meteo"}>
-            <span className="extra-metric-label">Official</span>{" "}
-            {displayOfficialTemp === null ? "--" : `${formatNumber(displayOfficialTemp)}°${tempUnit}`}
-            {displayOfficialDelta === null
-              ? ""
-              : ` (${displayOfficialDelta > 0 ? "+" : ""}${formatNumber(displayOfficialDelta)}°${tempUnit} vs sensor)`}
-          </span>
+          <>
+            <span title={officialObservedLabel ? `Open-Meteo, as of ${officialObservedLabel}` : "Open-Meteo"}>
+              <span className="extra-metric-label">Official temp</span>{" "}
+              {displayOfficialTemp === null ? "--" : `${formatNumber(displayOfficialTemp)}°${tempUnit}`}
+              {displayOfficialDelta === null
+                ? ""
+                : ` (${displayOfficialDelta > 0 ? "+" : ""}${formatNumber(displayOfficialDelta)}°${tempUnit} vs sensor)`}
+            </span>
+            <span title={officialObservedLabel ? `Open-Meteo, as of ${officialObservedLabel}` : "Open-Meteo"}>
+              <span className="extra-metric-label">Official humidity</span>{" "}
+              {formatNumber(official.humidity)}%
+              {officialHumidityDelta === null
+                ? ""
+                : ` (${officialHumidityDelta > 0 ? "+" : ""}${formatNumber(officialHumidityDelta)}% vs sensor)`}
+            </span>
+          </>
         ) : null}
       </div>
     </section>
@@ -1020,7 +1033,9 @@ export default function Page() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [sharedXRange, setSharedXRange] = useState<[string, string] | null>(null);
   const [weather, setWeather] = useState<WeatherResponse | null>(null);
-  const [weatherHistory, setWeatherHistory] = useState<{ timestampMs: number; temperature: number }[]>([]);
+  const [weatherHistory, setWeatherHistory] = useState<
+    { timestampMs: number; temperature: number; humidity: number }[]
+  >([]);
 
   const handleXRangeChange = useCallback((range: [string, string] | null) => {
     setSharedXRange(range);
@@ -1081,7 +1096,7 @@ export default function Page() {
       if (history.ok) {
         setWeatherHistory(
           history.points
-            .map((p) => ({ timestampMs: Date.parse(p.observedAt), temperature: p.temperature }))
+            .map((p) => ({ timestampMs: Date.parse(p.observedAt), temperature: p.temperature, humidity: p.humidity }))
             .filter((p) => Number.isFinite(p.timestampMs)),
         );
       }
@@ -1318,6 +1333,7 @@ export default function Page() {
           viewKey={viewKey}
           xAxisRange={sharedXRange}
           onXRangeChange={handleXRangeChange}
+          officialSeries={weatherHistory}
         />
       </section>
 

@@ -118,53 +118,56 @@ void loop() {
       lastScheduled = currentMillis; // do not burst-send to catch up
     }
 
-    // Read sensors (with retries)
-    float humidity = NAN;
-    float temperature = NAN;
-    if (!readDHTStable(humidity, temperature)) {
-      Serial.println("Failed to read from DHT sensor after retries.");
-      return; // skip this cycle
-    }
-
-    // Validate plausible ranges
-    if (!isPlausible(humidity, temperature)) {
-      Serial.println("Discarding implausible sensor reading.");
-      return;
-    }
-
-    // Prepare timestamps
+    // Timestamp shared by both sensors' rows this cycle
     time_t now = time(nullptr);
     unsigned long epoch = (unsigned long)now;
-    String formattedTime = hhmmssUTC(epoch);     // HH:MM:SS (legacy)
-    String timestampIso = iso8601UTC(epoch);     // ISO-8601 Zulu
 
-    // Print to Serial
-    Serial.println("Sending data to server(s)...");
-    Serial.print("Temp: "); Serial.print(temperature);
-    Serial.print(" °C  |  Humidity: "); Serial.print(humidity);
-    Serial.print(" %  |  Time: "); Serial.print(formattedTime);
-    Serial.print(" | ISO: "); Serial.println(timestampIso);
-    Serial.print("Device IP: "); Serial.println(WiFi.localIP());
-
-    // Write to both destinations independently; either one succeeding is
-    // enough to reset the backoff, so a single flaky endpoint doesn't slow
-    // down delivery to the other.
-    bool sheetsOk = false;
-    bool supabaseOk = false;
-    if (WiFi.status() == WL_CONNECTED) {
-      sheetsOk = postGoogleForms(humidity, temperature, epoch);
-      supabaseOk = postSupabase(WiFi.macAddress(), humidity, temperature, epoch);
+    // Read the DHT22 (with retries). A failed or implausible read skips only
+    // the DHT22 write: the TP357 scan below still runs, so one dead sensor
+    // doesn't silence the other. Backoff is left untouched in that case,
+    // since no network attempt was made.
+    float humidity = NAN;
+    float temperature = NAN;
+    bool dhtOk = readDHTStable(humidity, temperature);
+    if (!dhtOk) {
+      Serial.println("Failed to read from DHT sensor after retries.");
+    } else if (!isPlausible(humidity, temperature)) {
+      Serial.println("Discarding implausible sensor reading.");
+      dhtOk = false;
     }
 
-    if (sheetsOk || supabaseOk) {
-      backoffExp = 0; // at least one destination got the reading
-    } else {
-      if (backoffExp < 6) backoffExp++; // up to 2^6 = 64x
+    if (dhtOk) {
+      String formattedTime = hhmmssUTC(epoch);     // HH:MM:SS (legacy)
+      String timestampIso = iso8601UTC(epoch);     // ISO-8601 Zulu
+
+      // Print to Serial
+      Serial.println("Sending data to server(s)...");
+      Serial.print("Temp: "); Serial.print(temperature);
+      Serial.print(" °C  |  Humidity: "); Serial.print(humidity);
+      Serial.print(" %  |  Time: "); Serial.print(formattedTime);
+      Serial.print(" | ISO: "); Serial.println(timestampIso);
+      Serial.print("Device IP: "); Serial.println(WiFi.localIP());
+
+      // Write to both destinations independently; either one succeeding is
+      // enough to reset the backoff, so a single flaky endpoint doesn't slow
+      // down delivery to the other.
+      bool sheetsOk = false;
+      bool supabaseOk = false;
+      if (WiFi.status() == WL_CONNECTED) {
+        sheetsOk = postGoogleForms(humidity, temperature, epoch);
+        supabaseOk = postSupabase(WiFi.macAddress(), humidity, temperature, epoch);
+      }
+
+      if (sheetsOk || supabaseOk) {
+        backoffExp = 0; // at least one destination got the reading
+      } else {
+        if (backoffExp < 6) backoffExp++; // up to 2^6 = 64x
+      }
     }
 
-    // Opportunistically pick up the TP357's broadcast too. This is a bonus
-    // second sensor, not the primary reading, so a miss here doesn't affect
-    // backoff or the DHT22 write above.
+    // Opportunistically pick up the TP357's broadcast too, whether or not the
+    // DHT22 read above succeeded. This is a bonus second sensor, not the
+    // primary reading, so a miss here doesn't affect backoff.
     String tp357Label;
     float tp357Temp = NAN;
     float tp357Humidity = NAN;

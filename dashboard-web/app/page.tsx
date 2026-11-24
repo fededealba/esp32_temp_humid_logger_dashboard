@@ -25,6 +25,8 @@ type ApiResponse =
       stride: number;
       rangeHours: number | null;
       readings: Reading[];
+      // Newest reading overall, regardless of range_hours.
+      latest: Reading | null;
     }
   | {
       ok: false;
@@ -771,7 +773,7 @@ function ScatterChart({
           line: { width: 0 },
         },
         customdata: times.map((t) => zonedDateString(t, timezone)),
-        hovertemplate: `%{x:.1f}%% RH, %{y:.1f}${tempUnit}<br>%{customdata}<extra></extra>`,
+        hovertemplate: `%{x:.1f}% RH, %{y:.1f}${tempUnit}<br>%{customdata}<extra></extra>`,
       },
     ];
 
@@ -890,7 +892,7 @@ function ScatterChart({
           ) : null}
         </div>
         <div className="scatter-rates">
-          <ScatterRate label="Temp" value={tempRate} unit={`°${tempUnit}/min`} colorClass="rate-temp" />
+          <ScatterRate label="Temp" value={tempRate} unit={`${tempUnit}/min`} colorClass="rate-temp" />
           <ScatterRate label="Humidity" value={humRate} unit="%/min" colorClass="rate-humidity" />
         </div>
         </>
@@ -1048,23 +1050,34 @@ export default function Page() {
     setSharedXRange(null);
   }, [viewKey, timezone]);
 
+  // Monotonic request ids: only the most recently started request may update
+  // state. Without this, switching from a slow range ("All") to a fast one
+  // ("1h") lets the slow response land last and overwrite the chart with
+  // data for a range the dropdown no longer shows.
+  const readingsRequestId = useRef(0);
+  const weatherRequestId = useRef(0);
+
   // The server windows + downsamples based on `range_hours`, so the payload
   // size scales with the selected range instead of always being 5000 rows.
   const refresh = useCallback(async () => {
+    const requestId = ++readingsRequestId.current;
+    const isCurrent = () => requestId === readingsRequestId.current;
     setLoading(true);
     setError(null);
     try {
       const rangeParam = rangeHours === null ? "all" : String(rangeHours);
       const response = await fetch(`/api/readings?range_hours=${rangeParam}`, { cache: "no-store" });
       const payload = (await response.json()) as ApiResponse;
+      if (!isCurrent()) return;
       if (!response.ok || !payload.ok) {
         throw new Error(payload.ok ? "Could not load readings" : payload.error);
       }
       setData(payload);
     } catch (caught) {
+      if (!isCurrent()) return;
       setError(caught instanceof Error ? caught.message : "Could not load readings");
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [rangeHours]);
 
@@ -1084,6 +1097,7 @@ export default function Page() {
   // non-critical (the comparison simply disappears), so it's swallowed
   // rather than surfaced through the same `error` banner as readings.
   const refreshWeather = useCallback(async () => {
+    const requestId = ++weatherRequestId.current;
     try {
       const rangeParam = rangeHours === null ? "all" : String(rangeHours);
       const [current, history] = await Promise.all([
@@ -1092,6 +1106,7 @@ export default function Page() {
           (r) => r.json() as Promise<WeatherHistoryResponse>,
         ),
       ]);
+      if (requestId !== weatherRequestId.current) return;
       setWeather(current);
       if (history.ok) {
         setWeatherHistory(
@@ -1114,9 +1129,17 @@ export default function Page() {
   const official = weather?.ok && weather.configured ? weather : null;
 
   const readings = data?.ok ? data.readings : [];
+  const latestOverall = data?.ok ? data.latest : null;
+  // Devices seen in the selected range, plus the newest device overall and
+  // the currently selected one: a device that went quiet before the range
+  // started must stay selectable, or the controlled <select> would silently
+  // display "All devices" while still filtering to it.
   const devices = useMemo(() => {
-    return Array.from(new Set(readings.map((reading) => reading.deviceId))).sort();
-  }, [readings]);
+    const ids = new Set(readings.map((reading) => reading.deviceId));
+    if (latestOverall) ids.add(latestOverall.deviceId);
+    if (device !== "all") ids.add(device);
+    return Array.from(ids).sort();
+  }, [readings, latestOverall, device]);
 
   // The server already windows to `rangeHours`; here we only need to narrow
   // by device. The time cutoff that used to live here was a leftover from the
@@ -1173,15 +1196,26 @@ export default function Page() {
     return { min: Math.min(...values), max: Math.max(...values) };
   }, [filtered]);
 
-  // Newest reading for the selected device, ignoring the time-range filter, so
-  // staleness is detected even when the chosen range hides an offline device.
+  // Newest reading for the selected device. `readings` is windowed by the
+  // server, so when the outage is longer than the selected range it's empty;
+  // fall back to the API's unwindowed `latest` so staleness is still caught.
   const newestForDevice = useMemo(() => {
     const pool = device === "all" ? readings : readings.filter((reading) => reading.deviceId === device);
-    return pool.find((reading) => reading.timestampMs) ?? null;
-  }, [device, readings]);
+    const inRange = pool.find((reading) => reading.timestampMs) ?? null;
+    if (inRange) return inRange;
+    if (latestOverall?.timestampMs && (device === "all" || latestOverall.deviceId === device)) {
+      return latestOverall;
+    }
+    return null;
+  }, [device, readings, latestOverall]);
   const lastAgeMs =
     newestForDevice?.timestampMs != null ? Date.now() - newestForDevice.timestampMs : null;
   const isStale = lastAgeMs !== null && lastAgeMs > STALE_AFTER_MS;
+  // A specific device with nothing in range and no known newest reading
+  // (it isn't the most recent device overall, e.g. a second sensor that died
+  // while the other kept posting): we can't say how long ago, but it's quiet.
+  const deviceMissingFromRange =
+    data?.ok === true && device !== "all" && filtered.length === 0 && newestForDevice === null;
 
   // `sheetTitle` doubles as a data-source tag: "Supabase" when reading from
   // the database, otherwise the Google Sheet's title.
@@ -1193,7 +1227,7 @@ export default function Page() {
         <div>
           <h1>ESP32 Weather Monitor</h1>
           <p>
-            {latest ? `Last reading ${formatTime(latest, timezone)}` : "Waiting for readings"}
+            {newestForDevice ? `Last reading ${formatTime(newestForDevice, timezone)}` : "Waiting for readings"}
             {dataSource ? ` · Source: ${dataSource}` : ""}
           </p>
         </div>
@@ -1253,6 +1287,10 @@ export default function Page() {
           ⚠ No new readings for {formatAge(lastAgeMs)}
           {device !== "all" ? ` from ${device}` : ""} — the device may be offline.{" "}
           Last reading {formatTime(newestForDevice, timezone)}.
+        </div>
+      ) : deviceMissingFromRange ? (
+        <div className="warning-banner" role="status">
+          ⚠ No readings from {device} in the selected range — the device may be offline. Try a longer range.
         </div>
       ) : null}
 

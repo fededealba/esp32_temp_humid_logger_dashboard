@@ -23,6 +23,11 @@ export type ReadingsResponse = {
   stride: number;
   rangeHours: number | null;
   readings: Reading[];
+  /**
+   * Newest reading overall, ignoring `rangeHours`. Lets the UI detect an
+   * outage that's longer than the selected window, when `readings` is empty.
+   */
+  latest: Reading | null;
 };
 
 export type LoadReadingsOptions = {
@@ -300,5 +305,6 @@ export async function loadReadings(options: LoadReadingsOptions = {}): Promise<R
     stride,
     rangeHours,
     readings,
+    latest: allReadings[0] ?? null,
   };
 }

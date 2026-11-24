@@ -215,16 +215,36 @@ describe("lib/db", () => {
   });
 
   it("applies the time window server-side", async () => {
+    // Pin the clock to the fixtures' NOW; against the real clock the window
+    // is empty and the per-row assertions below would pass vacuously.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
     vi.stubGlobal("fetch", makeMockFetch());
     const { loadReadings } = await import("./db");
     const result = await loadReadings({ rangeHours: 24 });
+    vi.useRealTimers();
 
+    expect(result.readings.length).toBeGreaterThan(0);
     expect(result.rowsInRange).toBeLessThan(TOTAL);
     const cutoffMs = NOW - 24 * 3_600_000;
     for (const reading of result.readings) {
       expect(reading.timestampMs).not.toBeNull();
       expect(reading.timestampMs as number).toBeGreaterThanOrEqual(cutoffMs);
     }
+  });
+
+  it("returns the newest reading even when the outage is longer than the window", async () => {
+    // Device last posted at NOW; it's now 3h later and the user is on the 1h view.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW + 3 * 3_600_000);
+    vi.stubGlobal("fetch", makeMockFetch());
+    const { loadReadings } = await import("./db");
+    const result = await loadReadings({ rangeHours: 1 });
+    vi.useRealTimers();
+
+    expect(result.readings).toHaveLength(0);
+    expect(result.latest?.id).toBe(TOTAL);
+    expect(result.latest?.timestampMs).toBe(NOW);
   });
 
   it("legacy bare-limit path returns raw, unsampled rows newest-first", async () => {

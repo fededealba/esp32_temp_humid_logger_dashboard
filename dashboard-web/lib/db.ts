@@ -109,6 +109,18 @@ async function fetchExactCount(
   return total;
 }
 
+// Newest row in the whole table, ignoring any time window, so the dashboard
+// can still flag an outage that's longer than the selected range (in which
+// case the windowed result is empty). Cheap: served by readings_received_at_idx.
+async function fetchLatest(config: { url: string; key: string }): Promise<Reading | null> {
+  const params = new URLSearchParams({
+    select: "id,device_id,temperature,humidity,device_ts,received_at",
+    order: "received_at.desc",
+  });
+  const [row] = await fetchPage(`${config.url}/rest/v1/readings?${params}`, config.key, 0, 0);
+  return row ? toReading(row) : null;
+}
+
 async function fetchDownsampled(
   config: { url: string; key: string },
   cutoffIso: string | null,
@@ -189,6 +201,7 @@ export async function loadReadings(
       stride: 1,
       rangeHours,
       readings,
+      latest: readings[0] ?? null,
     };
   }
 
@@ -200,9 +213,10 @@ export async function loadReadings(
     ? new Date(Date.now() - rangeHours * 3_600_000).toISOString()
     : null;
 
-  const [rowsInRange, rows] = await Promise.all([
+  const [rowsInRange, rows, latest] = await Promise.all([
     fetchExactCount(config, cutoffIso),
     fetchDownsampled(config, cutoffIso, maxPoints),
+    fetchLatest(config),
   ]);
 
   const readings = sortNewestFirst(rows.map(toReading));
@@ -217,5 +231,6 @@ export async function loadReadings(
     stride,
     rangeHours,
     readings,
+    latest,
   };
 }

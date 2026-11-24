@@ -9,8 +9,10 @@ ingestion and storage.
 
 - `firmware/`: ESP32 Arduino sketch for a DHT22 sensor. It submits
   temperature, humidity, device ID, and timestamp values to a Google Form,
-  and — if `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` are set in
-  `secrets.h` — inserts the same reading directly into a Supabase table.
+  and — if `SUPABASE_URL`/`SUPABASE_ANON_KEY` are set in `secrets.h` —
+  inserts the same reading directly into a Supabase table. It also picks up
+  a ThermoPro TP357 Bluetooth sensor's broadcasts, when one is in range, and
+  writes those to Supabase as a second device.
 - `dashboard-web/`: Next.js app and Vercel deployment target. It reads from
   Supabase when configured, otherwise falls back to the linked Google Sheet,
   through a serverless API route, and renders the dashboard in React.
@@ -158,9 +160,10 @@ const char* WIFI_SSID = "your-wifi-name";
 const char* WIFI_PASSWORD = "your-wifi-password";
 
 // Optional: leave both empty ("") to skip Supabase and only post to Google
-// Forms. See "Configure Supabase" below before filling these in.
+// Forms. See "Configure Supabase" below before filling these in. This is
+// the anon/publishable key, never service_role.
 const char* SUPABASE_URL = "";
-const char* SUPABASE_SERVICE_ROLE_KEY = "";
+const char* SUPABASE_ANON_KEY = "";
 ```
 
 Then verify the firmware settings in
@@ -183,18 +186,24 @@ independent of the Google Forms/Sheets flow.
 - Open the SQL Editor and run `scripts/supabase-schema.sql` once to create the
   `readings` table. Skipping this step causes every insert/select against
   Supabase to fail with a "relation does not exist" (404) error.
-- Copy the project URL and the `service_role` key (Project Settings → API).
-- Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in
+- Copy the project URL and both API keys (Project Settings → API): the
+  `anon`/publishable key and the `service_role` key.
+- **Firmware:** set `SUPABASE_URL` and `SUPABASE_ANON_KEY` in
   `firmware/temp_hum_complete/secrets.h` so the ESP32 writes directly to the
   table on every reading, in addition to Google Forms.
-- Set the same two variables in `dashboard-web/.env.example`-style local env
-  or in the Vercel project settings so the dashboard reads from Supabase
-  instead of Google Sheets.
+- **Dashboard:** set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in
+  `dashboard-web/.env.local` (see `.env.example`) or in the Vercel project
+  settings so the dashboard reads from Supabase instead of Google Sheets.
 
-The `service_role` key bypasses row-level security and grants full
-read/write/delete access. It lives in the firmware binary on a physical
-device you don't fully control — if a device is ever lost, rotate the key in
-Supabase and reflash the fleet with the new one.
+The two keys sit on opposite sides of a trust boundary. The anon key lives in
+the firmware binary on a physical device you don't fully control, and its
+TLS connection isn't certificate-validated (`client.setInsecure()`), so the
+schema's row-level security policy limits it to `INSERT` on `readings`: a
+leaked anon key can add fake rows but can't read, change, or delete
+anything. The `service_role` key bypasses row-level security entirely, so it
+belongs only in server-side environments (Vercel, GitHub Actions secrets,
+your local `.env.local`) and never in `secrets.h`. If a firmware build was
+ever flashed with the `service_role` key, rotate it in Supabase.
 
 To copy existing Google Sheet history into Supabase (e.g. right after setting
 this up, so old readings aren't left behind), run the one-off backfill script
@@ -405,9 +414,13 @@ Dashboard code constants:
 Firmware constants:
 
 - `SERVER_URL`: Google Forms submission endpoint.
-- `DEVICE_NAME` and `FIRMWARE_VERSION`: metadata used in generated payloads.
 - `DHTPIN` and `DHTTYPE`: sensor configuration.
+- `BASE_INTERVAL_MS`: post interval (60 s), backed off exponentially up to
+  10 minutes while every destination is failing.
+- `TP357_NAME_PREFIX`: Bluetooth name prefix used to find the TP357.
 - Google Forms `entry.*` IDs in `buildFormPayload(...)`.
+- In `secrets.h`: `WIFI_SSID`, `WIFI_PASSWORD`, `SUPABASE_URL`,
+  `SUPABASE_ANON_KEY`.
 
 The previous Flask settings `API_BASE_URL`, `DASHBOARD_API_KEY`, and
 `INGEST_API_KEY` are not used by the current Google Forms/Sheets flow.

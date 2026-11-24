@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Config, Data, Layout } from "plotly.js";
+import { arrivalMs, newestByArrival } from "@/lib/freshness";
 
 type Reading = {
   id: number;
@@ -1196,20 +1197,23 @@ export default function Page() {
     return { min: Math.min(...values), max: Math.max(...values) };
   }, [filtered]);
 
-  // Newest reading for the selected device. `readings` is windowed by the
-  // server, so when the outage is longer than the selected range it's empty;
-  // fall back to the API's unwindowed `latest` so staleness is still caught.
+  // Most recently *arrived* reading for the selected device (see
+  // lib/freshness: arrival time comes from the database clock, so an
+  // unsynced or drifting ESP32 clock can't trigger or hide the warning).
+  // `readings` is windowed by the server, so when the outage is longer than
+  // the selected range it's empty; fall back to the API's unwindowed
+  // `latest` so staleness is still caught.
   const newestForDevice = useMemo(() => {
     const pool = device === "all" ? readings : readings.filter((reading) => reading.deviceId === device);
-    const inRange = pool.find((reading) => reading.timestampMs) ?? null;
+    const inRange = newestByArrival(pool);
     if (inRange) return inRange;
-    if (latestOverall?.timestampMs && (device === "all" || latestOverall.deviceId === device)) {
+    if (latestOverall && arrivalMs(latestOverall) !== null && (device === "all" || latestOverall.deviceId === device)) {
       return latestOverall;
     }
     return null;
   }, [device, readings, latestOverall]);
-  const lastAgeMs =
-    newestForDevice?.timestampMs != null ? Date.now() - newestForDevice.timestampMs : null;
+  const lastArrivalMs = newestForDevice ? arrivalMs(newestForDevice) : null;
+  const lastAgeMs = lastArrivalMs !== null ? Date.now() - lastArrivalMs : null;
   const isStale = lastAgeMs !== null && lastAgeMs > STALE_AFTER_MS;
   // A specific device with nothing in range and no known newest reading
   // (it isn't the most recent device overall, e.g. a second sensor that died

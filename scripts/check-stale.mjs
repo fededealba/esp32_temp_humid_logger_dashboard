@@ -64,10 +64,14 @@ async function main() {
   if (latestRows.length === 0) {
     isStale = true;
   } else {
+    // Measured from received_at (stamped by the database's clock on arrival)
+    // rather than device_ts: an ESP32 whose clock hasn't synced or has
+    // drifted would otherwise raise false alarms or mask a real outage.
+    // device_ts is only a fallback for rows somehow missing received_at.
     const { device_ts, received_at } = latestRows[0];
     const deviceTsMs = device_ts ? Date.parse(device_ts) : NaN;
     const receivedAtMs = received_at ? Date.parse(received_at) : NaN;
-    const timestampMs = Number.isFinite(deviceTsMs) ? deviceTsMs : receivedAtMs;
+    const timestampMs = Number.isFinite(receivedAtMs) ? receivedAtMs : deviceTsMs;
     // Treat unparseable timestamps as stale rather than silently no-op: a
     // malformed newest row (Date.parse(undefined) === NaN) would otherwise
     // make `NaN > STALE_AFTER_MS` false and skip the alert.

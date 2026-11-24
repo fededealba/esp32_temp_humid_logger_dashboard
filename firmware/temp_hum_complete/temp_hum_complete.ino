@@ -45,6 +45,12 @@ uint8_t backoffExp = 0;                          // exponential backoff exponent
 // HTTP
 const uint16_t HTTP_TIMEOUT_MS = 5000;
 
+// Any clock reading before this (2020-01-01T00:00:00Z) means NTP hasn't
+// synced yet and time() is still counting from 1970. Device timestamps are
+// omitted until then, so the row falls back to the server's received_at
+// (and the Supabase insert policy would reject a 1970 device_ts anyway).
+const unsigned long MIN_VALID_EPOCH = 1577836800UL;
+
 // DHT read retries
 const uint8_t dhtMaxAttempts = 3;
 const uint16_t dhtRetryDelayMs = 2000; // DHT22 prefers >=2s between attempts
@@ -235,7 +241,7 @@ bool readDHTStable(float &humidity, float &temperature) {
 }
 
 String iso8601UTC(unsigned long epoch) {
-  if (epoch == 0) return String("");
+  if (epoch < MIN_VALID_EPOCH) return String(""); // clock not synced yet
   time_t raw = (time_t)epoch;
   struct tm *ti = gmtime(&raw);
   if (!ti) return String("");
@@ -339,7 +345,10 @@ String buildFormPayload(float humidity, float temperature, unsigned long epoch) 
 String buildSupabaseJsonPayload(const String &deviceId, float humidity, float temperature, unsigned long epoch) {
   // `received_at` is left out on purpose: the table defaults it to the DB's
   // own now() so it reflects when the row actually arrived, independent of
-  // this device's clock.
+  // this device's clock (anon isn't even granted that column).
+  // `device_ts` is left out while the clock is unsynced (empty string from
+  // iso8601UTC), since "" isn't a valid timestamptz.
+  String deviceTs = iso8601UTC(epoch);
   String out;
 #if HAVE_ARDUINOJSON
   {
@@ -347,7 +356,7 @@ String buildSupabaseJsonPayload(const String &deviceId, float humidity, float te
     doc["device_id"] = deviceId;
     doc["temperature"] = roundf(temperature * 100.0f) / 100.0f;
     doc["humidity"] = roundf(humidity * 100.0f) / 100.0f;
-    doc["device_ts"] = iso8601UTC(epoch);
+    if (deviceTs.length() > 0) doc["device_ts"] = deviceTs;
     serializeJson(doc, out);
   }
 #else
@@ -355,9 +364,9 @@ String buildSupabaseJsonPayload(const String &deviceId, float humidity, float te
   out = String("{") +
         "\"device_id\": \"" + deviceId + "\"," +
         " \"temperature\": " + String(temperature, 2) +
-        ", \"humidity\": " + String(humidity, 2) +
-        ", \"device_ts\": \"" + iso8601UTC(epoch) + "\"" +
-        "}";
+        ", \"humidity\": " + String(humidity, 2);
+  if (deviceTs.length() > 0) out += ", \"device_ts\": \"" + deviceTs + "\"";
+  out += "}";
 #endif
   return out;
 }

@@ -28,12 +28,35 @@ alter table public.readings enable row level security;
 -- key can add fake rows but can't read, modify, or delete anything. The
 -- dashboard still reads/writes with service_role server-side (Vercel env
 -- vars), a different trust boundary than a physical device.
+--
+-- Column-level grant: anon may only supply the four columns the firmware
+-- sends. In particular it can't set received_at, which the stale-check and
+-- dashboard treat as the trustworthy arrival time -- a single forged row
+-- dated in the future would otherwise make a dead station look alive
+-- indefinitely. (Supabase grants anon table-wide privileges by default, and
+-- a column grant only takes effect once the table-wide one is revoked.)
+revoke insert on public.readings from anon;
+grant insert (device_id, temperature, humidity, device_ts) on public.readings to anon;
+
+-- Value checks live in the policy rather than as table CHECK constraints so
+-- they apply only to anon writes (never to service_role backfills) and
+-- don't have to validate rows that already exist. Ranges match the
+-- firmware's own isPlausible(); the firmware omits device_ts entirely until
+-- its clock has synced over NTP, rather than sending a 1970 date.
 drop policy if exists "anon can insert readings" on public.readings;
 create policy "anon can insert readings"
   on public.readings
   for insert
   to anon
-  with check (true);
+  with check (
+    temperature between -40 and 85
+    and humidity between 0 and 100
+    and length(device_id) between 1 and 64
+    and (
+      device_ts is null
+      or (device_ts >= '2020-01-01' and device_ts <= now() + interval '10 minutes')
+    )
+  );
 
 -- Server-side stride downsampling: given a target point count and an
 -- optional cutoff, returns evenly-spaced rows (always including the

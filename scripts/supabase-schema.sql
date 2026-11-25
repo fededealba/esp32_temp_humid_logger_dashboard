@@ -39,7 +39,7 @@ revoke insert on public.readings from anon;
 grant insert (device_id, temperature, humidity, device_ts) on public.readings to anon;
 
 -- Value checks live in the policy rather than as table CHECK constraints so
--- they apply only to anon writes (never to service_role backfills) and
+-- they apply only to anon writes (never to service_role writes) and
 -- don't have to validate rows that already exist. Ranges match the
 -- firmware's own isPlausible(); the firmware omits device_ts entirely until
 -- its clock has synced over NTP, rather than sending a 1970 date.

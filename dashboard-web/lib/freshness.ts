@@ -1,9 +1,9 @@
-import type { Reading } from "./sheets";
+import type { Reading } from "./types";
 
 // A received_at that carries its own zone (Supabase returns e.g.
-// "2026-11-24T11:53:13.123+00:00") is an unambiguous instant. Google Forms'
-// submission timestamps ("6/1/2026 10:00:00") have no zone, so parsing them
-// in the browser would silently assume the viewer's timezone.
+// "2026-11-24T11:53:13.123+00:00") is an unambiguous instant. Anything
+// zone-less would be parsed in the viewer's timezone, so it's not trusted
+// and the resolved timestamp is used instead.
 const HAS_ZONE = /(?:Z|[+-]\d{2}:?\d{2})$/;
 
 /**

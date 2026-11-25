@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { loadReadings as loadFromSheets } from "@/lib/sheets";
-import { loadReadings as loadFromDb, isSupabaseConfigured } from "@/lib/db";
+import { loadReadings } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,9 +34,6 @@ export async function GET(request: Request) {
       rangeHours = Math.min(n, 24 * 365); // sanity cap: one year
     }
   }
-
-  // Use Supabase when configured; fall back to Google Sheets otherwise.
-  const loadReadings = isSupabaseConfigured() ? loadFromDb : loadFromSheets;
 
   try {
     const data = await loadReadings({ rangeHours, limit, maxPoints });

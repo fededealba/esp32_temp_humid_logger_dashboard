@@ -22,12 +22,9 @@
 // Fallbacks (replace or create secrets.h)
 const char* WIFI_SSID = "YOUR_WIFI_SSID";
 const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
-const char* SUPABASE_URL = nullptr;             // e.g. https://xxxx.supabase.co ("" or nullptr disables)
+const char* SUPABASE_URL = nullptr;             // e.g. https://xxxx.supabase.co (required: the only destination)
 const char* SUPABASE_ANON_KEY = nullptr;
 #endif
-
-// Google Forms submission URL (HTTPS)
-const char* SERVER_URL = "https://docs.google.com/forms/d/e/1FAIpQLSdaHQuuWAcFIjU44oZUqOMrtZhC9smcMoF9IOquQO8FFVwU5Q/formResponse";
 
 // DHT22 setup
 #define DHTPIN 4
@@ -78,9 +75,7 @@ bool readDHTStable(float &humidity, float &temperature);
 String iso8601UTC(unsigned long epoch);
 String hhmmssUTC(unsigned long epoch);
 bool isPlausible(float humidity, float temperature);
-String buildFormPayload(float humidity, float temperature, unsigned long epoch);
 String buildSupabaseJsonPayload(const String &deviceId, float humidity, float temperature, unsigned long epoch);
-bool postGoogleForms(float humidity, float temperature, unsigned long epoch);
 bool postSupabase(const String &deviceId, float humidity, float temperature, unsigned long epoch);
 bool decodeTP357ManufacturerData(const std::string &data, float &tempC, float &humidityPct);
 bool scanForTP357(String &label, float &tempC, float &humidityPct);
@@ -161,25 +156,22 @@ void loop() {
       String timestampIso = iso8601UTC(epoch);     // ISO-8601 Zulu
 
       // Print to Serial
-      Serial.println("Sending data to server(s)...");
+      Serial.println("Sending data to Supabase...");
       Serial.print("Temp: "); Serial.print(temperature);
       Serial.print(" °C  |  Humidity: "); Serial.print(humidity);
       Serial.print(" %  |  Time: "); Serial.print(formattedTime);
       Serial.print(" | ISO: "); Serial.println(timestampIso);
       Serial.print("Device IP: "); Serial.println(WiFi.localIP());
 
-      // Write to both destinations independently; either one succeeding is
-      // enough to reset the backoff, so a single flaky endpoint doesn't slow
-      // down delivery to the other.
-      bool sheetsOk = false;
+      // Back off exponentially while Supabase is unreachable, and reset as
+      // soon as a post lands.
       bool supabaseOk = false;
       if (WiFi.status() == WL_CONNECTED) {
-        sheetsOk = postGoogleForms(humidity, temperature, epoch);
         supabaseOk = postSupabase(WiFi.macAddress(), humidity, temperature, epoch);
       }
 
-      if (sheetsOk || supabaseOk) {
-        backoffExp = 0; // at least one destination got the reading
+      if (supabaseOk) {
+        backoffExp = 0;
       } else {
         if (backoffExp < 6) backoffExp++; // up to 2^6 = 64x
       }
@@ -327,32 +319,11 @@ bool isPlausible(float humidity, float temperature) {
   return true;
 }
 
-bool postGoogleForms(float humidity, float temperature, unsigned long epoch) {
-  HTTPClient http;
-  WiFiClientSecure client;
-  client.setInsecure(); // For development - in production, use proper certificate validation
-  http.begin(client, SERVER_URL);
-  http.setTimeout(HTTP_TIMEOUT_MS);
-  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
-  http.addHeader("User-Agent", "esp32-dht22-client/1.1");
-  http.addHeader("Connection", "close");
-
-  String formData = buildFormPayload(humidity, temperature, epoch);
-  int code = http.POST(formData);
-  Serial.print("Google Forms HTTP response: ");
-  Serial.println(code);
-  if (code <= 0) {
-    Serial.print("Google Forms HTTP error: ");
-    Serial.println(http.errorToString(code));
-  }
-  http.end();
-  return code > 0 && code < 400;
-}
-
 bool postSupabase(const String &deviceId, float humidity, float temperature, unsigned long epoch) {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY ||
       strlen(SUPABASE_URL) == 0 || strlen(SUPABASE_ANON_KEY) == 0) {
-    return false; // not configured; not an error, just a disabled channel
+    Serial.println("Supabase not configured: set SUPABASE_URL and SUPABASE_ANON_KEY in secrets.h.");
+    return false;
   }
 
   HTTPClient http;
@@ -379,21 +350,6 @@ bool postSupabase(const String &deviceId, float humidity, float temperature, uns
   }
   http.end();
   return code >= 200 && code < 300;
-}
-
-String buildFormPayload(float humidity, float temperature, unsigned long epoch) {
-  // Google Forms field IDs:
-  // Temperature: entry.2135755099
-  // Humidity: entry.346799127
-  // Device ID: entry.1396898277
-  // Timestamp: entry.1586851294
-  String out;
-  out.reserve(200);
-  out = String("entry.2135755099=") + String(temperature, 2) +
-        "&entry.346799127=" + String(humidity, 2) +
-        "&entry.1396898277=" + WiFi.macAddress() +
-        "&entry.1586851294=" + iso8601UTC(epoch);
-  return out;
 }
 
 String buildSupabaseJsonPayload(const String &deviceId, float humidity, float temperature, unsigned long epoch) {

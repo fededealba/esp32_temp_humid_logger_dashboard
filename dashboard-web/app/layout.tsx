@@ -4,7 +4,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "ESP32 Weather Monitor",
-  description: "Temperature and humidity dashboard for ESP32 Google Sheets data",
+  description: "Temperature and humidity dashboard for an ESP32 weather station",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {

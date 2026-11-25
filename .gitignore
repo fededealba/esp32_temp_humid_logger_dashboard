@@ -3,13 +3,11 @@ secrets.h
 firmware/**/secrets.h
 firmware/temp_hum_complete/secrets.h
 
-# Google Sheets API credentials
+# Google service account keys from the retired Sheets integration; kept
+# ignored so a leftover local key can never be committed.
 dashboard/credentials.json
 credentials.json
 
-# Local Flask instance data (deprecated)
-server/instance/
-instance/
 .tools/
 
 # Next.js / Vercel

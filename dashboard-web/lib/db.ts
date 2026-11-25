@@ -1,4 +1,4 @@
-import type { ReadingsResponse, LoadReadingsOptions, Reading } from "./sheets";
+import type { ReadingsResponse, LoadReadingsOptions, Reading } from "./types";
 
 export type { ReadingsResponse, LoadReadingsOptions, Reading };
 
@@ -40,7 +40,6 @@ function toReading(row: SupabaseRow): Reading {
     ?? (Number.isFinite(receivedAtMs) ? receivedAtMs : null);
   return {
     id: row.id,
-    sheetRow: row.id,
     temperature: row.temperature,
     humidity: row.humidity,
     deviceId: row.device_id,
@@ -53,7 +52,7 @@ function toReading(row: SupabaseRow): Reading {
 
 // Newest first; rows without a resolvable timestamp fall to the back.
 // Re-sorting (rather than trusting query order) guards against
-// device_ts/received_at drift, mirroring sheets.ts.
+// device_ts/received_at drift.
 function sortNewestFirst(readings: Reading[]): Reading[] {
   return [...readings].sort((a, b) => {
     if (a.timestampMs !== null && b.timestampMs !== null) return b.timestampMs - a.timestampMs;
@@ -214,8 +213,6 @@ export async function loadReadings(
     return {
       ok: true,
       generatedAt: new Date().toISOString(),
-      sheetTitle: "Supabase",
-      rowsLoaded: readings.length,
       rowsInRange: readings.length,
       stride: 1,
       rangeHours,
@@ -246,8 +243,6 @@ export async function loadReadings(
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
-    sheetTitle: "Supabase",
-    rowsLoaded: rowsInRange,
     rowsInRange,
     stride,
     rangeHours,

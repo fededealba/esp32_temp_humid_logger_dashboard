@@ -1,11 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { arrivalMs, newestByArrival } from "./freshness";
-import type { Reading } from "./sheets";
+import type { Reading } from "./types";
 
 function reading(overrides: Partial<Reading>): Reading {
   return {
     id: 1,
-    sheetRow: 1,
     temperature: 20,
     humidity: 50,
     deviceId: "AA:BB",
@@ -31,7 +30,7 @@ describe("lib/freshness", () => {
     expect(arrivalMs(reading({ receivedAt: "2026-11-24T13:00:00+0100" }))).toBe(Date.parse("2026-11-24T12:00:00Z"));
   });
 
-  it("falls back to the resolved timestamp for zone-less Google Forms times", () => {
+  it("falls back to the resolved timestamp for zone-less times", () => {
     const r = reading({ receivedAt: "6/1/2026 10:00:00", timestampMs: 123 });
     expect(arrivalMs(r)).toBe(123);
   });

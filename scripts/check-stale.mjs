@@ -6,7 +6,7 @@
 // Required env vars: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
 //                     TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
-// Matches STALE_AFTER_MS in dashboard-web/app/page.tsx (5x the ~60s post interval).
+// Matches STALE_AFTER_MS in dashboard-web/lib/constants.ts (5x the ~60s post interval).
 const STALE_AFTER_MS = 5 * 60 * 1000;
 
 function requireEnv(name) {

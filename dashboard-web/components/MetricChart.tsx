@@ -20,6 +20,7 @@ export function MetricChart({
   xAxisRange,
   onXRangeChange,
   officialSeries,
+  touchZoom = false,
 }: {
   readings: Reading[];
   metric: "temperature" | "humidity";
@@ -31,6 +32,9 @@ export function MetricChart({
   // Reference line from Open-Meteo history, shown on both the temperature
   // and humidity charts; absent/empty whenever there's no history yet.
   officialSeries?: { timestampMs: number; temperature: number; humidity: number }[];
+  /** Touch screens only: drag selects a time span to zoom to (the page's
+   *  "Zoom" button), instead of scrolling the page. */
+  touchZoom?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const isTemp = metric === "temperature";
@@ -155,9 +159,10 @@ export function MetricChart({
       font: { family: "Inter, ui-sans-serif, system-ui, sans-serif", size: 12, color: fontColor },
       hovermode: "x unified",
       hoverlabel: { bgcolor: hoverBg, bordercolor: hoverBorder, font: { color: hoverFont } },
-      // On touch screens a drag must scroll the page, not zoom the chart (the
-      // range buttons cover zooming there); taps still show values.
-      dragmode: isTouch ? false : "zoom",
+      // On touch screens a drag scrolls the page -- Plotly can't tell a
+      // scroll from a zoom, and has no pinch -- except while the page's
+      // "Zoom" button is on. Taps still show values.
+      dragmode: isTouch && !touchZoom ? false : "zoom",
       showlegend: multiDevice || hasOfficial,
       // Anchored above the plot on the left, clear of the toolbar on the right.
       legend: { orientation: "h", x: 0, xanchor: "left", y: 1, yanchor: "bottom", font: { color: fontColor, size: 11 } },
@@ -183,6 +188,9 @@ export function MetricChart({
         zeroline: false,
       },
       yaxis: {
+        // On touch, a drag zooms time only: a finger-drawn box is too
+        // imprecise to also pick a value range.
+        fixedrange: isTouch,
         tickfont: { color: multiDevice ? fontColor : palette[0] },
         range: [yMin, yMax],
         gridcolor: gridColor,
@@ -193,6 +201,9 @@ export function MetricChart({
     const config: Partial<Config> = {
       responsive: true,
       displaylogo: false,
+      // No "Double-click to zoom back out" popup: on phones the page's
+      // Reset zoom button is the way back, and on desktop it's noise.
+      showTips: false,
       scrollZoom: false,
       // Its buttons are too small to tap, and zooming is drag-based anyway.
       displayModeBar: isTouch ? false : "hover",
@@ -229,7 +240,7 @@ export function MetricChart({
     return () => {
       cancelled = true;
     };
-  }, [chartReadings, deviceIds, hasEnough, isDark, isTemp, useFahrenheit, timezone, viewKey, officialSeries, isTouch, isNarrow, chartHeight]);
+  }, [chartReadings, deviceIds, hasEnough, isDark, isTemp, useFahrenheit, timezone, viewKey, officialSeries, isTouch, isNarrow, chartHeight, touchZoom]);
 
   // Apply an x-axis range received from the sibling chart.
   useEffect(() => {

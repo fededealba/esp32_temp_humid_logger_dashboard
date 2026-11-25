@@ -95,8 +95,13 @@ export default function Page() {
     if (prefsLoaded) saveCached("prefs", prefs);
   }, [prefs, prefsLoaded]);
 
+  // Touch screens: drags scroll the page, so zooming is an explicit mode
+  // that ends by itself after one zoom, giving scrolling back.
+  const [touchZoom, setTouchZoom] = useState(false);
+
   const handleXRangeChange = useCallback((range: [string, string] | null) => {
     setSharedXRange(range);
+    if (range) setTouchZoom(false);
   }, []);
 
   const viewKey = `${rangeHours ?? "all"}|${device}`;
@@ -504,7 +509,26 @@ export default function Page() {
         </div>
       </section>
 
-      <section className="panel chart-panel">
+      {/* Touch screens only (hidden with a fine pointer in globals.css). */}
+      <div className="zoom-bar">
+        <button
+          type="button"
+          className="chip"
+          aria-pressed={touchZoom}
+          onClick={() => setTouchZoom((on) => !on)}
+        >
+          {touchZoom ? "Cancel zoom" : "🔍 Zoom"}
+        </button>
+        {touchZoom ? (
+          <span className="zoom-hint">Drag sideways across a chart to pick a time span</span>
+        ) : sharedXRange ? (
+          <button type="button" className="chip" onClick={() => setSharedXRange(null)}>
+            Reset zoom
+          </button>
+        ) : null}
+      </div>
+
+      <section className={`panel chart-panel${touchZoom ? " zooming" : ""}`}>
         <div className="panel-header">
           <h2>Temperature (°{tempUnit})</h2>
           <span>
@@ -524,10 +548,11 @@ export default function Page() {
           xAxisRange={sharedXRange}
           onXRangeChange={handleXRangeChange}
           officialSeries={weatherHistory}
+          touchZoom={touchZoom}
         />
       </section>
 
-      <section className="panel chart-panel">
+      <section className={`panel chart-panel${touchZoom ? " zooming" : ""}`}>
         <div className="panel-header">
           <h2>Humidity (%)</h2>
           <span>
@@ -547,6 +572,7 @@ export default function Page() {
           xAxisRange={sharedXRange}
           onXRangeChange={handleXRangeChange}
           officialSeries={weatherHistory}
+          touchZoom={touchZoom}
         />
       </section>
 

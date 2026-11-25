@@ -577,6 +577,30 @@ td.num {
   color: var(--humidity);
 }
 
+/* Zoom controls exist for touch screens only; mice drag-zoom directly. */
+.zoom-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.zoom-hint {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.chart-panel.zooming {
+  outline: 2px solid var(--humidity);
+  outline-offset: -1px;
+}
+
+@media (pointer: fine) {
+  .zoom-bar {
+    display: none;
+  }
+}
+
 /* Touch screens: comfortable tap targets (~44px, Apple's guideline). */
 @media (pointer: coarse) {
   .chip,

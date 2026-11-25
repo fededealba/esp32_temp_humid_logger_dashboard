@@ -236,6 +236,9 @@ export function ScatterChart({
     const config: Partial<Config> = {
       responsive: true,
       displaylogo: false,
+      // No "Double-click to zoom back out" popup: on phones the page's
+      // Reset zoom button is the way back, and on desktop it's noise.
+      showTips: false,
       scrollZoom: false,
       displayModeBar: isTouch ? false : "hover",
       modeBarButtonsToRemove: ["lasso2d", "select2d", "autoScale2d", "toggleSpikelines"],

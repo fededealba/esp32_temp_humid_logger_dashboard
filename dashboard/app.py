@@ -133,20 +133,22 @@ def load_data_from_sheets(max_rows: int = 2000):
         # Create a smarter column mapping
         actual_columns = df.columns.tolist()
 
-        # Map columns based on content/position
+        # Map columns based on content/position. "timestamp" is checked
+        # before the generic "device" match (same order as the Next.js
+        # dashboard's lib/sheets.ts), or a header like "Device Timestamp"
+        # would be taken for the device ID column.
         column_mapping = {}
         for i, col in enumerate(actual_columns):
             col_lower = col.lower()
-            if 'timestamp' in col_lower and i == 0:
-                column_mapping[col] = 'received_at'  # First timestamp is form submission
+            if 'timestamp' in col_lower:
+                # First timestamp is the form submission, later ones the device's
+                column_mapping[col] = 'received_at' if i == 0 else 'device_timestamp'
             elif 'temperature' in col_lower:
                 column_mapping[col] = 'temperature'
             elif 'humidity' in col_lower:
                 column_mapping[col] = 'humidity'
             elif 'device' in col_lower:
                 column_mapping[col] = 'device_id'
-            elif 'timestamp' in col_lower and i > 0:
-                column_mapping[col] = 'device_timestamp'  # Later timestamp is from device
 
         # Apply the mapping
         if column_mapping:

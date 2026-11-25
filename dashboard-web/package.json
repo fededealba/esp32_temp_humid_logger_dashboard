@@ -20,11 +20,11 @@
     "react-dom": "19.2.4"
   },
   "devDependencies": {
-    "@types/node": "latest",
+    "@types/node": "^22.20.7",
     "@types/plotly.js": "^3.0.10",
-    "@types/react": "latest",
-    "@types/react-dom": "latest",
-    "typescript": "latest",
+    "@types/react": "^19.3.2",
+    "@types/react-dom": "^19.3.0",
+    "typescript": "^6.0.3",
     "vitest": "^4.1.9"
   }
 }

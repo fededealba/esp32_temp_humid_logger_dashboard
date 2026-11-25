@@ -21,8 +21,8 @@ export async function GET(request: Request) {
       { ok: true, points },
       {
         headers: {
-          // Matches /api/weather's own cache window -- this table only
-          // grows one row every ~30 min via scripts/log-weather.mjs.
+          // Matches /api/weather's own cache window: the history is
+          // Open-Meteo's hourly series, so it changes at most once an hour.
           "Cache-Control": "max-age=300",
           "CDN-Cache-Control": "max-age=600",
           "Vercel-CDN-Cache-Control": "max-age=600",

@@ -78,6 +78,7 @@ bool readDHTStable(float &humidity, float &temperature);
 String iso8601UTC(unsigned long epoch);
 String hhmmssUTC(unsigned long epoch);
 bool isPlausible(float humidity, float temperature);
+String buildFormPayload(float humidity, float temperature, unsigned long epoch);
 String buildSupabaseJsonPayload(const String &deviceId, float humidity, float temperature, unsigned long epoch);
 bool postGoogleForms(float humidity, float temperature, unsigned long epoch);
 bool postSupabase(const String &deviceId, float humidity, float temperature, unsigned long epoch);
@@ -99,9 +100,11 @@ void setup() {
   setupTime();
   dht.begin();
 
-  // Try to sync time on startup (non-blocking bounded attempts)
+  // Wait briefly for the first NTP sync (bounded, ~4.5s max). If it isn't
+  // there yet, SNTP keeps retrying in the background, and until it lands
+  // readings go out without a device timestamp (see MIN_VALID_EPOCH).
   if (!ensureTimeSync()) {
-    Serial.println("Warning: NTP time not available yet; will retry later.");
+    Serial.println("Warning: NTP time not available yet; SNTP will keep retrying.");
   }
 
   // BLE scanning coexists with WiFi (the ESP32 radio time-slices between
@@ -126,15 +129,14 @@ void loop() {
   handleOTA();
   unsigned long currentMillis = millis();
 
-  // Drift-free interval scheduling with rollover safety
+  // Interval scheduling, safe across millis() rollover (unsigned
+  // subtraction). The anchor resets to now rather than advancing by
+  // intervalMs, so a long blocking cycle never triggers back-to-back
+  // catch-up posts; the cost is that the cycle's own duration adds to the
+  // spacing between readings.
   unsigned long intervalMs = currentInterval();
   if ((long)(currentMillis - lastScheduled) >= (long)intervalMs) {
-    // If we are extremely behind (e.g., after long block), resync anchor
-    if (currentMillis - lastScheduled > 10UL * BASE_INTERVAL_MS) {
-      lastScheduled = currentMillis;
-    } else {
-      lastScheduled = currentMillis; // do not burst-send to catch up
-    }
+    lastScheduled = currentMillis;
 
     // Timestamp shared by both sensors' rows this cycle
     time_t now = time(nullptr);
@@ -197,7 +199,13 @@ void loop() {
       Serial.print("TP357 "); Serial.print(tp357Label);
       Serial.print(": "); Serial.print(tp357Temp); Serial.print(" C, ");
       Serial.print(tp357Humidity); Serial.println(" %");
-      postSupabase(tp357Label, tp357Humidity, tp357Temp, epoch);
+      // Same sanity check as the DHT22: a garbled advertisement can still
+      // decode to numbers, and the Supabase policy would reject them anyway.
+      if (isPlausible(tp357Humidity, tp357Temp)) {
+        postSupabase(tp357Label, tp357Humidity, tp357Temp, epoch);
+      } else {
+        Serial.println("Discarding implausible TP357 reading.");
+      }
     } else {
       Serial.println("TP357 not seen this cycle.");
     }
@@ -265,10 +273,8 @@ void setupTime() {
 bool ensureTimeSync(uint8_t maxAttempts) {
   struct tm timeinfo;
   for (uint8_t i = 0; i < maxAttempts; i++) {
-    if (gettimeofday(nullptr, nullptr) == 0 && getLocalTime(&timeinfo, 100)) {
-      // time is set
-      return true;
-    }
+    // getLocalTime() only succeeds once the clock is past 2016, i.e. synced.
+    if (getLocalTime(&timeinfo, 100)) return true;
     delay(200);
   }
   return false;

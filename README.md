@@ -4,8 +4,9 @@ ESP32 Temp/Humidity Logger Dashboard
 Overview
 --------
 
-This branch uses Google Forms/Sheets and, optionally, Supabase (Postgres) for
-ingestion and storage.
+The project stores readings in Supabase (Postgres), the primary source for
+the Vercel dashboard, and also in a Google Sheet via Google Forms, the
+legacy path kept as a fallback and for the Streamlit dashboard.
 
 - `firmware/`: ESP32 Arduino sketch for a DHT22 sensor. It submits
   temperature, humidity, device ID, and timestamp values to a Google Form,
@@ -18,8 +19,6 @@ ingestion and storage.
   through a serverless API route, and renders the dashboard in React.
 - `dashboard/`: Streamlit dashboard. It reads the linked Google Sheet with
   Google service account credentials and renders metrics, charts, and raw data.
-
-No local Flask server or SQLite database is required for the current flow.
 
 Data Flow
 ---------
@@ -448,9 +447,6 @@ Firmware constants:
 - In `secrets.h`: `WIFI_SSID`, `WIFI_PASSWORD`, `SUPABASE_URL`,
   `SUPABASE_ANON_KEY`, and optionally `OTA_PASSWORD`.
 
-The previous Flask settings `API_BASE_URL`, `DASHBOARD_API_KEY`, and
-`INGEST_API_KEY` are not used by the current Google Forms/Sheets flow.
-
 Expected Sheet Columns
 ----------------------
 
@@ -480,4 +476,5 @@ Notes
 
 - `firmware/**/secrets.h` is ignored by Git.
 - `dashboard/credentials.json` and root `credentials.json` are ignored by Git.
-- The dashboard reads Google Sheets directly; it does not read a local database.
+- `dashboard-web/.env.local` (Supabase service key, Google credentials) is
+  ignored by Git.

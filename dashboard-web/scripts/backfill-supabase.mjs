@@ -98,13 +98,16 @@ function parseTimestampMs(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+// Same order as lib/sheets.ts: "timestamp" is checked before the generic
+// "device" match, or a header like "Device Timestamp" would be taken for
+// the device ID column (and overwrite it).
 function mapHeader(header, index) {
   const lower = header.toLowerCase();
+  if (lower.includes("timestamp") && index > 0) return "deviceTimestamp";
   if (lower.includes("timestamp") && index === 0) return "receivedAt";
   if (lower.includes("temperature")) return "temperature";
   if (lower.includes("humidity")) return "humidity";
   if (lower.includes("device")) return "deviceId";
-  if (lower.includes("timestamp") && index > 0) return "deviceTimestamp";
   return null;
 }
 

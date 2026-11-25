@@ -4,8 +4,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MetricChart } from "@/components/MetricChart";
 import { ScatterChart } from "@/components/ScatterChart";
 import { StatusCard } from "@/components/StatusCard";
+import { loadCached, saveCached } from "@/lib/cache";
 import { STALE_AFTER_MS } from "@/lib/constants";
-import { formatAge, formatNumber, formatTime } from "@/lib/format";
+import { deviceLabel } from "@/lib/devices";
+import { formatAge, formatAgo, formatNumber, formatShortTime, formatTime } from "@/lib/format";
 import { arrivalMs, newestByArrival } from "@/lib/freshness";
 import { TREND_WINDOW_MS, deviceTrends, type Trend } from "@/lib/trends";
 import type { ApiResponse, Reading, WeatherHistoryResponse, WeatherResponse } from "@/lib/types";
@@ -38,21 +40,60 @@ const RANGES = [
 // observed skipping up to ~2h under load; 6h of silence means it's stopped
 // (e.g. GitHub auto-disabled it after 60 days without commits).
 const ALERTS_STALE_AFTER_MS = 6 * 60 * 60 * 1000;
+const REFRESH_INTERVAL_MS = 30_000;
+const WEATHER_REFRESH_INTERVAL_MS = 5 * 60_000;
+
+type Prefs = {
+  rangeHours: number | null;
+  device: string;
+  useFahrenheit: boolean;
+  timezone: string;
+  autoRefresh: boolean;
+};
+type WeatherPoint = { timestampMs: number; temperature: number; humidity: number };
+
+const DEFAULT_PREFS: Prefs = {
+  rangeHours: 24,
+  device: "all",
+  useFahrenheit: false,
+  timezone: process.env.NEXT_PUBLIC_DASHBOARD_TIMEZONE || "Europe/Paris",
+  autoRefresh: true,
+};
+
+const rangeParamOf = (rangeHours: number | null) => (rangeHours === null ? "all" : String(rangeHours));
 
 export default function Page() {
   const [data, setData] = useState<ApiResponse | null>(null);
+  // True while `data` is the copy saved on a previous visit and the fresh
+  // request hasn't landed yet. Offline/staleness warnings are held back
+  // meanwhile: they'd be judging old numbers against the current time.
+  const [showingCached, setShowingCached] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [device, setDevice] = useState("all");
-  const [rangeHours, setRangeHours] = useState<number | null>(24);
-  const [useFahrenheit, setUseFahrenheit] = useState(false);
-  const [timezone, setTimezone] = useState(process.env.NEXT_PUBLIC_DASHBOARD_TIMEZONE || "Europe/Paris");
-  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [prefs, setPrefs] = useState<Prefs>(DEFAULT_PREFS);
+  const [prefsLoaded, setPrefsLoaded] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [sharedXRange, setSharedXRange] = useState<[string, string] | null>(null);
   const [weather, setWeather] = useState<WeatherResponse | null>(null);
-  const [weatherHistory, setWeatherHistory] = useState<
-    { timestampMs: number; temperature: number; humidity: number }[]
-  >([]);
+  const [weatherHistory, setWeatherHistory] = useState<WeatherPoint[]>([]);
+  // "Now" for age labels, ticked by refreshes and a timer rather than read
+  // during render, so "3 min ago" keeps moving even with auto-refresh off.
+  const [now, setNow] = useState(() => Date.now());
+
+  const { rangeHours, device, useFahrenheit, timezone, autoRefresh } = prefs;
+  const updatePrefs = useCallback((patch: Partial<Prefs>) => setPrefs((p) => ({ ...p, ...patch })), []);
+
+  // Restore the settings from the last visit before the first fetch, so the
+  // phone reopens on the range/device you left it on (and doesn't fetch the
+  // default range first).
+  useEffect(() => {
+    const saved = loadCached<Partial<Prefs>>("prefs");
+    if (saved) setPrefs((p) => ({ ...p, ...saved.value }));
+    setPrefsLoaded(true);
+  }, []);
+  useEffect(() => {
+    if (prefsLoaded) saveCached("prefs", prefs);
+  }, [prefs, prefsLoaded]);
 
   const handleXRangeChange = useCallback((range: [string, string] | null) => {
     setSharedXRange(range);
@@ -68,9 +109,27 @@ export default function Page() {
   // Monotonic request ids: only the most recently started request may update
   // state. Without this, switching from a slow range ("All") to a fast one
   // ("1h") lets the slow response land last and overwrite the chart with
-  // data for a range the dropdown no longer shows.
+  // data for a range the selector no longer shows.
   const readingsRequestId = useRef(0);
   const weatherRequestId = useRef(0);
+
+  // Show the readings saved on the last visit immediately: after the server
+  // has gone idle, the first fresh response can take several seconds, which
+  // is exactly when a phone opens the page. Only one range is kept, so
+  // switching ranges never shows another range's data under the wrong label.
+  useEffect(() => {
+    if (!prefsLoaded) return;
+    const cached = loadCached<{ range: string; payload: ApiResponse }>("readings");
+    if (cached && cached.value.range === rangeParamOf(rangeHours) && cached.value.payload.ok) {
+      setData(cached.value.payload);
+      setShowingCached(true);
+    }
+    const cachedWeather = loadCached<{ current: WeatherResponse; history: WeatherPoint[]; range: string }>("weather");
+    if (cachedWeather) {
+      setWeather(cachedWeather.value.current);
+      if (cachedWeather.value.range === rangeParamOf(rangeHours)) setWeatherHistory(cachedWeather.value.history);
+    }
+  }, [prefsLoaded, rangeHours]);
 
   // The server windows + downsamples based on `range_hours`, so the payload
   // size scales with the selected range instead of always being 5000 rows.
@@ -78,9 +137,8 @@ export default function Page() {
     const requestId = ++readingsRequestId.current;
     const isCurrent = () => requestId === readingsRequestId.current;
     setLoading(true);
-    setError(null);
     try {
-      const rangeParam = rangeHours === null ? "all" : String(rangeHours);
+      const rangeParam = rangeParamOf(rangeHours);
       const response = await fetch(`/api/readings?range_hours=${rangeParam}`, { cache: "no-store" });
       const payload = (await response.json()) as ApiResponse;
       if (!isCurrent()) return;
@@ -88,25 +146,22 @@ export default function Page() {
         throw new Error(payload.ok ? "Could not load readings" : payload.error);
       }
       setData(payload);
+      setShowingCached(false);
+      setError(null);
+      saveCached("readings", { range: rangeParam, payload });
     } catch (caught) {
       if (!isCurrent()) return;
+      // Keep whatever is on screen (fresh or saved) and say it's not current.
       setError(caught instanceof Error ? caught.message : "Could not load readings");
     } finally {
-      if (isCurrent()) setLoading(false);
+      if (isCurrent()) {
+        setLoading(false);
+        setNow(Date.now());
+      }
     }
   }, [rangeHours]);
 
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
-
-  useEffect(() => {
-    if (!autoRefresh) return;
-    const interval = window.setInterval(refresh, 30000);
-    return () => window.clearInterval(interval);
-  }, [autoRefresh, refresh]);
-
-  // Separate from the readings poll above: the API route caches Open-Meteo
+  // Separate from the readings poll: the API route caches Open-Meteo
   // responses for several minutes, so polling every 30s like the readings
   // endpoint would just re-request the same cached value. A failure here is
   // non-critical (the comparison simply disappears), so it's swallowed
@@ -114,7 +169,7 @@ export default function Page() {
   const refreshWeather = useCallback(async () => {
     const requestId = ++weatherRequestId.current;
     try {
-      const rangeParam = rangeHours === null ? "all" : String(rangeHours);
+      const rangeParam = rangeParamOf(rangeHours);
       const [current, history] = await Promise.all([
         fetch("/api/weather", { cache: "no-store" }).then((r) => r.json() as Promise<WeatherResponse>),
         fetch(`/api/weather/history?range_hours=${rangeParam}`, { cache: "no-store" }).then(
@@ -123,32 +178,71 @@ export default function Page() {
       ]);
       if (requestId !== weatherRequestId.current) return;
       setWeather(current);
-      if (history.ok) {
-        setWeatherHistory(
-          history.points
+      const points = history.ok
+        ? history.points
             .map((p) => ({ timestampMs: Date.parse(p.observedAt), temperature: p.temperature, humidity: p.humidity }))
-            .filter((p) => Number.isFinite(p.timestampMs)),
-        );
-      }
+            .filter((p) => Number.isFinite(p.timestampMs))
+        : null;
+      if (points) setWeatherHistory(points);
+      if (current.ok) saveCached("weather", { current, history: points ?? [], range: rangeParam });
     } catch {
       // Keep whatever was last loaded.
     }
   }, [rangeHours]);
 
   useEffect(() => {
+    if (!prefsLoaded) return;
+    refresh();
+  }, [refresh, prefsLoaded]);
+
+  useEffect(() => {
+    if (!prefsLoaded) return;
     refreshWeather();
-    const interval = window.setInterval(refreshWeather, 5 * 60000);
+    const interval = window.setInterval(refreshWeather, WEATHER_REFRESH_INTERVAL_MS);
     return () => window.clearInterval(interval);
-  }, [refreshWeather]);
+  }, [refreshWeather, prefsLoaded]);
+
+  // Background tabs (and every app you switch away from on a phone) have
+  // their timers paused, so coming back would show old numbers until the
+  // next tick. Refresh the moment the page is visible again instead, and
+  // only poll while it's visible.
+  useEffect(() => {
+    if (!prefsLoaded) return;
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      setNow(Date.now());
+      refresh();
+      refreshWeather();
+    };
+    // pageshow covers iOS restoring the page from its back/forward cache.
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) onVisible();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("pageshow", onPageShow);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("pageshow", onPageShow);
+    };
+  }, [refresh, refreshWeather, prefsLoaded]);
+
+  useEffect(() => {
+    if (!prefsLoaded) return;
+    const interval = window.setInterval(() => {
+      setNow(Date.now());
+      if (autoRefresh && document.visibilityState === "visible") refresh();
+    }, REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [autoRefresh, refresh, prefsLoaded]);
 
   const official = weather?.ok && weather.configured ? weather : null;
 
-  const readings = data?.ok ? data.readings : [];
+  const readings = useMemo(() => (data?.ok ? data.readings : []), [data]);
   const latestOverall = data?.ok ? data.latest : null;
   // Devices seen in the selected range, plus the newest device overall and
   // the currently selected one: a device that went quiet before the range
-  // started must stay selectable, or the controlled <select> would silently
-  // display "All devices" while still filtering to it.
+  // started must stay selectable, or the selector would silently show
+  // "All" while still filtering to it.
   const devices = useMemo(() => {
     const ids = new Set(readings.map((reading) => reading.deviceId));
     if (latestOverall) ids.add(latestOverall.deviceId);
@@ -156,10 +250,7 @@ export default function Page() {
     return Array.from(ids).sort();
   }, [readings, latestOverall, device]);
 
-  // The server already windows to `rangeHours`; here we only need to narrow
-  // by device. The time cutoff that used to live here was a leftover from the
-  // pre-server-windowing days and would drift with `Date.now()` across
-  // re-renders while adding nothing on top of the fetched payload.
+  // The server already windows to `rangeHours`; here we only narrow by device.
   const filtered = useMemo(() => {
     if (device === "all") return readings;
     return readings.filter((reading) => reading.deviceId === device);
@@ -167,10 +258,11 @@ export default function Page() {
 
   const latest = filtered[0];
   const tempUnit = useFahrenheit ? "F" : "C";
+  const singleDeviceView = device !== "all" || devices.length <= 1;
 
-  // One card per device when viewing "All devices" with more than one
-  // present, instead of a single ambiguous "latest reading from whichever
-  // device happened to post most recently" value.
+  // One card per device when viewing "All" with more than one present,
+  // instead of a single ambiguous "latest reading from whichever device
+  // happened to post most recently" value.
   const latestByDevice = useMemo(() => {
     const map = new Map<string, Reading>();
     for (const reading of filtered) {
@@ -178,12 +270,10 @@ export default function Page() {
     }
     return map;
   }, [filtered]);
-  const showPerDeviceStatus = device === "all" && devices.length > 1;
 
-  // Per-device trend (last 10 min), independent of the device filter above
-  // so it stays available regardless of which device's chart is showing.
+  // Per-device trend (last 10 min), independent of the device filter above.
   const trendByDevice = useMemo(() => {
-    const cutoff = Date.now() - TREND_WINDOW_MS;
+    const cutoff = now - TREND_WINDOW_MS;
     const recentByDevice = new Map<string, Reading[]>();
     for (const reading of readings) {
       if (reading.timestampMs === null || reading.timestampMs < cutoff) continue;
@@ -196,10 +286,9 @@ export default function Page() {
       map.set(deviceId, deviceTrends(recent));
     }
     return map;
-  }, [readings]);
+  }, [readings, now]);
 
-  // Max/Min for each chart header. Computed in the displayed unit so the
-  // labels match what the user sees in the chart.
+  // Max/Min for each chart header, in the displayed unit.
   const tempStats = useMemo(() => {
     if (!filtered.length) return null;
     const values = filtered.map((r) => (useFahrenheit ? toFahrenheit(r.temperature) : r.temperature));
@@ -227,123 +316,82 @@ export default function Page() {
     return null;
   }, [device, readings, latestOverall]);
   const lastArrivalMs = newestForDevice ? arrivalMs(newestForDevice) : null;
-  const lastAgeMs = lastArrivalMs !== null ? Date.now() - lastArrivalMs : null;
-  const isStale = lastAgeMs !== null && lastAgeMs > STALE_AFTER_MS;
+  const lastAgeMs = lastArrivalMs !== null ? Math.max(0, now - lastArrivalMs) : null;
+  const isStale = !showingCached && lastAgeMs !== null && lastAgeMs > STALE_AFTER_MS;
   // A specific device with nothing in range and no known newest reading
   // (it isn't the most recent device overall, e.g. a second sensor that died
   // while the other kept posting): we can't say how long ago, but it's quiet.
   const deviceMissingFromRange =
-    data?.ok === true && device !== "all" && filtered.length === 0 && newestForDevice === null;
+    !showingCached && data?.ok === true && device !== "all" && filtered.length === 0 && newestForDevice === null;
 
   // Only warn on a known-old heartbeat; null means "unknown" (schema
   // predating the column), not "broken".
   const alertsCheckedMs = data?.ok && data.alertsCheckedAt ? Date.parse(data.alertsCheckedAt) : NaN;
-  const alertsStale = Number.isFinite(alertsCheckedMs) && Date.now() - alertsCheckedMs > ALERTS_STALE_AFTER_MS;
+  const alertsStale =
+    !showingCached && Number.isFinite(alertsCheckedMs) && now - alertsCheckedMs > ALERTS_STALE_AFTER_MS;
+
+  const updating = loading || showingCached;
 
   return (
     <main className="page">
       <header className="topbar">
-        <div>
+        <div className="topbar-text">
           <h1>ESP32 Weather Monitor</h1>
-          <p>
-            {newestForDevice ? `Last reading ${formatTime(newestForDevice, timezone)}` : "Waiting for readings"}
+          <p className="status-line">
+            {newestForDevice && lastAgeMs !== null ? (
+              <>
+                Last reading {formatTime(newestForDevice, timezone)} · {formatAgo(lastAgeMs)}
+              </>
+            ) : updating ? (
+              "Loading…"
+            ) : (
+              "Waiting for readings"
+            )}
+            {updating && newestForDevice ? <span className="updating"> · updating…</span> : null}
           </p>
         </div>
-        <button className="icon-button" type="button" onClick={refresh} disabled={loading} aria-label="Refresh data">
-          <span aria-hidden="true">↻</span>
-          Refresh
+        <button
+          className="icon-button refresh-button"
+          type="button"
+          onClick={refresh}
+          disabled={loading}
+          aria-label="Refresh data"
+        >
+          <span aria-hidden="true" className={loading ? "spin" : undefined}>
+            ↻
+          </span>
+          <span className="refresh-text">Refresh</span>
         </button>
       </header>
-
-      <section className="controls" aria-label="Dashboard controls">
-        <label>
-          Device
-          <select value={device} onChange={(event) => setDevice(event.target.value)}>
-            <option value="all">All devices</option>
-            {devices.map((deviceId) => (
-              <option key={deviceId} value={deviceId}>
-                {deviceId}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Range
-          <select
-            value={rangeHours ?? "all"}
-            onChange={(event) => setRangeHours(event.target.value === "all" ? null : Number(event.target.value))}
-          >
-            {RANGES.map((range) => (
-              <option key={range.label} value={range.hours ?? "all"}>
-                {range.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Timezone
-          <select value={timezone} onChange={(event) => setTimezone(event.target.value)}>
-            {TIMEZONES.map((tz) => (
-              <option key={tz} value={tz}>
-                {tz}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="toggle-row">
-          <input type="checkbox" checked={useFahrenheit} onChange={(event) => setUseFahrenheit(event.target.checked)} />
-          Fahrenheit
-        </label>
-        <label className="toggle-row">
-          <input type="checkbox" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} />
-          Auto-refresh
-        </label>
-      </section>
 
       {isStale && lastAgeMs !== null && newestForDevice ? (
         <div className="warning-banner" role="status">
           ⚠ No new readings for {formatAge(lastAgeMs)}
-          {device !== "all" ? ` from ${device}` : ""} — the device may be offline.{" "}
-          Last reading {formatTime(newestForDevice, timezone)}.
+          {device !== "all" ? ` from ${deviceLabel(device)}` : ""} — the device may be offline.
         </div>
       ) : deviceMissingFromRange ? (
         <div className="warning-banner" role="status">
-          ⚠ No readings from {device} in the selected range — the device may be offline. Try a longer range.
+          ⚠ No readings from {deviceLabel(device)} in the selected range — the device may be offline. Try a longer
+          range.
         </div>
       ) : null}
 
       {alertsStale ? (
         <div className="warning-banner" role="status">
-          ⚠ Offline alerts haven&apos;t run for {formatAge(Date.now() - alertsCheckedMs)}, so Telegram won&apos;t
-          notify you if the station goes quiet. GitHub may have disabled the stale-check workflow: re-enable it from
-          the repository&apos;s Actions tab.
+          ⚠ Offline alerts haven&apos;t run for {formatAge(now - alertsCheckedMs)}, so Telegram won&apos;t notify you
+          if the station goes quiet. GitHub may have disabled the stale-check workflow: re-enable it from the
+          repository&apos;s Actions tab.
         </div>
       ) : null}
 
-      {error ? <div className="error-banner">{error}</div> : null}
-
-      {showPerDeviceStatus ? (
-        <div className="status-card-group">
-          {devices.map((deviceId) => {
-            const reading = latestByDevice.get(deviceId) ?? null;
-            const trend = trendByDevice.get(deviceId);
-            return (
-              <div key={deviceId} className="status-card-item">
-                <div className="status-card-item-label">{deviceId}</div>
-                <StatusCard
-                  currentTempC={reading ? reading.temperature : null}
-                  humidity={reading ? reading.humidity : null}
-                  useFahrenheit={useFahrenheit}
-                  tempTrend={trend?.temp}
-                  humidityTrend={trend?.humidity}
-                  official={official}
-                  timezone={timezone}
-                />
-              </div>
-            );
-          })}
+      {error ? (
+        <div className="error-banner" role="status">
+          Couldn&apos;t refresh: {error}
+          {data?.ok ? " Showing the last readings loaded." : ""}
         </div>
-      ) : (
+      ) : null}
+
+      {singleDeviceView ? (
         <StatusCard
           currentTempC={latest ? latest.temperature : null}
           humidity={latest ? latest.humidity : null}
@@ -351,17 +399,118 @@ export default function Page() {
           tempTrend={trendByDevice.get(latest?.deviceId ?? "")?.temp}
           humidityTrend={trendByDevice.get(latest?.deviceId ?? "")?.humidity}
           official={official}
-          timezone={timezone}
         />
+      ) : (
+        <div className="status-card-group">
+          {devices.map((deviceId) => {
+            const reading = latestByDevice.get(deviceId) ?? null;
+            const trend = trendByDevice.get(deviceId);
+            return (
+              <StatusCard
+                key={deviceId}
+                title={deviceLabel(deviceId)}
+                titleHint={deviceId}
+                currentTempC={reading ? reading.temperature : null}
+                humidity={reading ? reading.humidity : null}
+                useFahrenheit={useFahrenheit}
+                tempTrend={trend?.temp}
+                humidityTrend={trend?.humidity}
+                official={official}
+              />
+            );
+          })}
+        </div>
       )}
 
-      <section className="panel chart-panel" style={{ marginTop: 16 }}>
+      {official ? (
+        <p className="outdoor-line">
+          <span className="extra-metric-label">Outdoor</span>{" "}
+          <strong>
+            {formatNumber(useFahrenheit ? toFahrenheit(official.temperature) : official.temperature)}°{tempUnit} ·{" "}
+            {formatNumber(official.humidity)}%
+          </strong>{" "}
+          <span className="extra-metric-label">
+            Open-Meteo, {formatShortTime(Date.parse(official.observedAt), timezone, now)}
+          </span>
+        </p>
+      ) : null}
+
+      <section className="toolbar" aria-label="Dashboard controls">
+        <div className="chip-row ranges" role="group" aria-label="Time range">
+          {RANGES.map((range) => (
+            <button
+              key={range.label}
+              type="button"
+              className="chip"
+              aria-pressed={rangeHours === range.hours}
+              onClick={() => updatePrefs({ rangeHours: range.hours })}
+            >
+              {range.label}
+            </button>
+          ))}
+        </div>
+        {devices.length > 1 ? (
+          <div className="chip-row" role="group" aria-label="Device">
+            {["all", ...devices].map((deviceId) => (
+              <button
+                key={deviceId}
+                type="button"
+                className="chip"
+                title={deviceId === "all" ? undefined : deviceId}
+                aria-pressed={device === deviceId}
+                onClick={() => updatePrefs({ device: deviceId })}
+              >
+                {deviceId === "all" ? (devices.length === 2 ? "Both" : "All sensors") : deviceLabel(deviceId)}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <button
+          type="button"
+          className="settings-toggle"
+          aria-expanded={settingsOpen}
+          aria-controls="settings-panel"
+          onClick={() => setSettingsOpen((open) => !open)}
+        >
+          Settings {settingsOpen ? "▴" : "▾"}
+        </button>
+        <div id="settings-panel" className={`settings-panel${settingsOpen ? " open" : ""}`}>
+          <label className="select-label">
+            Timezone
+            <select value={timezone} onChange={(event) => updatePrefs({ timezone: event.target.value })}>
+              {TIMEZONES.map((tz) => (
+                <option key={tz} value={tz}>
+                  {tz}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={useFahrenheit}
+              onChange={(event) => updatePrefs({ useFahrenheit: event.target.checked })}
+            />
+            Fahrenheit
+          </label>
+          <label className="toggle-row">
+            <input
+              type="checkbox"
+              checked={autoRefresh}
+              onChange={(event) => updatePrefs({ autoRefresh: event.target.checked })}
+            />
+            Auto-refresh
+          </label>
+        </div>
+      </section>
+
+      <section className="panel chart-panel">
         <div className="panel-header">
           <h2>Temperature (°{tempUnit})</h2>
           <span>
             {tempStats
-              ? `Max: ${formatNumber(tempStats.max)}°${tempUnit}   Min: ${formatNumber(tempStats.min)}°${tempUnit}`
-              : loading
+              ? `Max ${formatNumber(tempStats.max)}° · Min ${formatNumber(tempStats.min)}°`
+              : updating
                 ? "Loading"
                 : "--"}
           </span>
@@ -378,13 +527,13 @@ export default function Page() {
         />
       </section>
 
-      <section className="panel chart-panel" style={{ marginTop: 16 }}>
+      <section className="panel chart-panel">
         <div className="panel-header">
           <h2>Humidity (%)</h2>
           <span>
             {humStats
-              ? `Max: ${formatNumber(humStats.max)}%   Min: ${formatNumber(humStats.min)}%`
-              : loading
+              ? `Max ${formatNumber(humStats.max)}% · Min ${formatNumber(humStats.min)}%`
+              : updating
                 ? "Loading"
                 : "--"}
           </span>
@@ -401,48 +550,56 @@ export default function Page() {
         />
       </section>
 
-      <section className="panel chart-panel" style={{ marginTop: 16 }}>
-        <div className="panel-header">
-          <h2>Temperature vs Humidity</h2>
-          <span>{loading ? "Loading" : `${filtered.length} points`}</span>
-        </div>
-        <ScatterChart
-          readings={filtered}
-          useFahrenheit={useFahrenheit}
-          timezone={timezone}
-          viewKey={viewKey}
-          xAxisRange={sharedXRange}
-        />
-      </section>
+      {/* One chronological path per chart, so it only makes sense for a single
+          device; with several, pick one with the device buttons above. */}
+      {singleDeviceView ? (
+        <section className="panel chart-panel">
+          <div className="panel-header">
+            <h2>Temperature vs Humidity</h2>
+            <span>{updating && !filtered.length ? "Loading" : `${filtered.length} points`}</span>
+          </div>
+          <ScatterChart
+            readings={filtered}
+            useFahrenheit={useFahrenheit}
+            timezone={timezone}
+            viewKey={viewKey}
+            xAxisRange={sharedXRange}
+          />
+        </section>
+      ) : null}
 
-      <section className="panel table-panel" style={{ marginTop: 16 }}>
+      <section className="panel table-panel">
         <div className="panel-header">
           <h2>Recent Readings</h2>
           {/* Charts and table are downsampled server-side on long ranges. */}
-          <span>{data?.ok && data.stride > 1 ? `1 in ${data.stride} readings shown` : ""}</span>
+          <span>{data?.ok && data.stride > 1 ? `1 in ${data.stride} shown` : ""}</span>
         </div>
         <div className="table-wrap">
           <table>
             <thead>
               <tr>
                 <th>Time</th>
-                <th>Device</th>
-                <th>Temp</th>
-                <th>Humidity</th>
+                {singleDeviceView ? null : <th>Device</th>}
+                <th className="num">Temp</th>
+                <th className="num">Humidity</th>
               </tr>
             </thead>
             <tbody>
               {filtered.slice(0, 12).map((reading) => (
                 <tr key={reading.id}>
                   <td>{formatTime(reading, timezone)}</td>
-                  <td>{reading.deviceId}</td>
-                  <td>{formatNumber(useFahrenheit ? toFahrenheit(reading.temperature) : reading.temperature)}°{tempUnit}</td>
-                  <td>{formatNumber(reading.humidity)}%</td>
+                  {singleDeviceView ? null : <td title={reading.deviceId}>{deviceLabel(reading.deviceId)}</td>}
+                  <td className="num">
+                    {formatNumber(useFahrenheit ? toFahrenheit(reading.temperature) : reading.temperature)}°{tempUnit}
+                  </td>
+                  <td className="num">{formatNumber(reading.humidity)}%</td>
                 </tr>
               ))}
             </tbody>
           </table>
-          {!filtered.length ? <div className="empty-panel">No readings match the selected filters.</div> : null}
+          {!filtered.length && !updating ? (
+            <div className="empty-panel">No readings match the selected filters.</div>
+          ) : null}
         </div>
       </section>
     </main>

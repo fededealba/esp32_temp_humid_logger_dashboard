@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Full-bleed background with the glyphs inside the central ~60%, so the
+       same artwork works as a maskable Android icon (circle/squircle crops). -->
+  <rect width="512" height="512" rx="112" fill="#0f1419"/>
+  <!-- Thermometer: tube outline, orange mercury, bulb -->
+  <rect x="158" y="118" width="76" height="236" rx="38" fill="none" stroke="#e2e8ef" stroke-width="16"/>
+  <rect x="180" y="190" width="32" height="170" rx="16" fill="#f97316"/>
+  <circle cx="196" cy="364" r="50" fill="#f97316" stroke="#e2e8ef" stroke-width="16"/>
+  <!-- Drop -->
+  <path d="M338 168 C338 168 272 256 272 308 A66 66 0 0 0 404 308 C404 256 338 168 338 168 Z" fill="#38bdf8"/>
+</svg>

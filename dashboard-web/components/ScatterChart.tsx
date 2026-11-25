@@ -6,6 +6,7 @@ import { toFahrenheit } from "@/lib/units";
 import { zonedDateString, zonedDateStringMs } from "@/lib/zoned-time";
 import { loadPlotly, purgePlot } from "./plotly";
 import { useDarkMode } from "./useDarkMode";
+import { NARROW_QUERY, TOUCH_QUERY, useMediaQuery } from "./useMediaQuery";
 
 export function ScatterRate({
   label,
@@ -45,20 +46,10 @@ export function ScatterChart({
   xAxisRange?: [string, string] | null;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const [isNarrow, setIsNarrow] = useState(false);
+  const isNarrow = useMediaQuery(NARROW_QUERY);
+  const isTouch = useMediaQuery(TOUCH_QUERY);
   const [animFrame, setAnimFrame] = useState<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
-
-  // Track the phone breakpoint so the colorbar moves out of the way of the
-  // plot area instead of squeezing it on narrow screens.
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const mq = window.matchMedia("(max-width: 680px)");
-    const update = () => setIsNarrow(mq.matches);
-    update();
-    mq.addEventListener("change", update);
-    return () => mq.removeEventListener("change", update);
-  }, []);
 
   // This chart plots one continuous chronological trajectory (colored by
   // time, animated as a single path) — that concept doesn't extend to
@@ -221,6 +212,8 @@ export function ScatterChart({
       plot_bgcolor: "rgba(0,0,0,0)",
       font: { family: "Inter, ui-sans-serif, system-ui, sans-serif", size: 12, color: fontColor },
       hovermode: "closest",
+      // On touch screens a drag must scroll the page, not zoom the chart.
+      dragmode: isTouch ? false : "zoom",
       hoverlabel: { bgcolor: hoverBg, bordercolor: hoverBorder, font: { color: hoverFont } },
       xaxis: {
         title: { text: "Humidity (%)", font: { color: humAxisColor } },
@@ -244,6 +237,7 @@ export function ScatterChart({
       responsive: true,
       displaylogo: false,
       scrollZoom: false,
+      displayModeBar: isTouch ? false : "hover",
       modeBarButtonsToRemove: ["lasso2d", "select2d", "autoScale2d", "toggleSpikelines"],
     };
 
@@ -255,7 +249,7 @@ export function ScatterChart({
     return () => {
       cancelled = true;
     };
-  }, [displayPoints, points, hasEnough, isDark, useFahrenheit, timezone, viewKey, isNarrow]);
+  }, [displayPoints, points, hasEnough, isDark, useFahrenheit, timezone, viewKey, isNarrow, isTouch]);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -284,7 +278,8 @@ export function ScatterChart({
     <div className="chart-shell">
       <div
         ref={containerRef}
-        style={{ minHeight: isNarrow ? 380 : 460, display: hasEnough ? "block" : "none" }}
+        className="chart-host scatter"
+        style={{ display: hasEnough ? "block" : "none" }}
       />
       {hasEnough ? null : multiDevice ? (
         <div className="empty-panel">Select a specific device (above) to see this chart.</div>

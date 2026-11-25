@@ -2,12 +2,14 @@ import { useEffect, useMemo, useRef } from "react";
 import type { Config, Data, Layout } from "plotly.js";
 import type { Reading } from "@/lib/types";
 import { POST_INTERVAL_MS } from "@/lib/constants";
+import { deviceLabel } from "@/lib/devices";
 import { withGapBreaks } from "@/lib/gaps";
 import { toFahrenheit } from "@/lib/units";
 import { zonedDateString } from "@/lib/zoned-time";
 import { HUMIDITY_COLORS, HUMIDITY_FILL, OFFICIAL_COLOR, TEMP_COLORS, TEMP_FILL } from "./palette";
 import { loadPlotly, normalizeAxisValue, purgePlot, type PlotlyEventDiv } from "./plotly";
 import { useDarkMode } from "./useDarkMode";
+import { NARROW_QUERY, TOUCH_QUERY, useMediaQuery } from "./useMediaQuery";
 
 export function MetricChart({
   readings,
@@ -33,6 +35,9 @@ export function MetricChart({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const isTemp = metric === "temperature";
   const isDark = useDarkMode();
+  const isTouch = useMediaQuery(TOUCH_QUERY);
+  const isNarrow = useMediaQuery(NARROW_QUERY);
+  const chartHeight = isNarrow ? 230 : 280;
   // Tracks the last range we either sent to the parent or applied from it,
   // so we can break the relayout feedback loop between the two charts.
   const lastAppliedRange = useRef<string | null>(null);
@@ -91,7 +96,7 @@ export function MetricChart({
       return {
         type: "scatter",
         mode: "lines+markers",
-        name: deviceId,
+        name: deviceLabel(deviceId),
         x,
         y,
         line: { color, width: 2.5, shape: "linear" },
@@ -140,18 +145,37 @@ export function MetricChart({
 
     const layout: Partial<Layout> = {
       autosize: true,
-      height: 280,
+      height: chartHeight,
       uirevision: `${useFahrenheit ? "f" : "c"}|${timezone}|${viewKey}`,
-      margin: { l: 56, r: 24, t: multiDevice || hasOfficial ? 32 : 12, b: 44 },
+      margin: isNarrow
+        ? { l: 36, r: 8, t: multiDevice || hasOfficial ? 28 : 8, b: 32 }
+        : { l: 56, r: 24, t: multiDevice || hasOfficial ? 32 : 12, b: 44 },
       paper_bgcolor: "rgba(0,0,0,0)",
       plot_bgcolor: "rgba(0,0,0,0)",
       font: { family: "Inter, ui-sans-serif, system-ui, sans-serif", size: 12, color: fontColor },
       hovermode: "x unified",
       hoverlabel: { bgcolor: hoverBg, bordercolor: hoverBorder, font: { color: hoverFont } },
+      // On touch screens a drag must scroll the page, not zoom the chart (the
+      // range buttons cover zooming there); taps still show values.
+      dragmode: isTouch ? false : "zoom",
       showlegend: multiDevice || hasOfficial,
-      legend: { orientation: "h", y: 1.12, font: { color: fontColor, size: 11 } },
+      // Anchored above the plot on the left, clear of the toolbar on the right.
+      legend: { orientation: "h", x: 0, xanchor: "left", y: 1, yanchor: "bottom", font: { color: fontColor, size: 11 } },
       xaxis: {
         type: "date",
+        // On a phone, one short label per tick instead of Plotly's two-line
+        // time + full date, which overlapped at this width: times for spans
+        // up to ~a day and a half, dates beyond that.
+        ...(isNarrow
+          ? {
+              nticks: 5,
+              tickangle: 0,
+              tickformat:
+                (chartReadings.at(-1)?.timestampMs ?? 0) - (chartReadings[0]?.timestampMs ?? 0) <= 36 * 3_600_000
+                  ? "%H:%M"
+                  : "%d %b",
+            }
+          : {}),
         hoverformat: "%b %d, %H:%M",
         gridcolor: gridColor,
         linecolor: axisColor,
@@ -170,6 +194,8 @@ export function MetricChart({
       responsive: true,
       displaylogo: false,
       scrollZoom: false,
+      // Its buttons are too small to tap, and zooming is drag-based anyway.
+      displayModeBar: isTouch ? false : "hover",
       modeBarButtonsToRemove: ["lasso2d", "select2d", "autoScale2d", "toggleSpikelines"],
     };
 
@@ -203,7 +229,7 @@ export function MetricChart({
     return () => {
       cancelled = true;
     };
-  }, [chartReadings, deviceIds, hasEnough, isDark, isTemp, useFahrenheit, timezone, viewKey, officialSeries]);
+  }, [chartReadings, deviceIds, hasEnough, isDark, isTemp, useFahrenheit, timezone, viewKey, officialSeries, isTouch, isNarrow, chartHeight]);
 
   // Apply an x-axis range received from the sibling chart.
   useEffect(() => {
@@ -236,7 +262,7 @@ export function MetricChart({
 
   return (
     <div className="chart-shell">
-      <div ref={containerRef} style={{ minHeight: 280, display: hasEnough ? "block" : "none" }} />
+      <div ref={containerRef} className="chart-host metric" style={{ display: hasEnough ? "block" : "none" }} />
       {hasEnough ? null : (
         <div className="empty-panel">Waiting for enough timestamped readings.</div>
       )}

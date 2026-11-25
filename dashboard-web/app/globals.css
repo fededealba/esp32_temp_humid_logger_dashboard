@@ -55,7 +55,10 @@ input {
 .page {
   width: min(1440px, 100%);
   margin: 0 auto;
-  padding: 24px;
+  /* env(safe-area-inset-*) keeps content clear of the iPhone notch and home
+     bar when the app runs full-screen from the home screen. */
+  padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right))
+    max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
 }
 
 .topbar {
@@ -64,6 +67,23 @@ input {
   justify-content: space-between;
   gap: 18px;
   padding: 10px 0 20px;
+}
+
+.topbar-text {
+  min-width: 0;
+}
+
+.status-line .updating {
+  opacity: 0.75;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.spin {
+  display: inline-block;
+  animation: spin 0.9s linear infinite;
 }
 
 .topbar h1 {
@@ -96,29 +116,80 @@ input {
   opacity: 0.65;
 }
 
-.controls {
-  display: grid;
-  grid-template-columns: minmax(180px, 1.3fr) repeat(2, minmax(140px, 1fr)) auto auto;
-  gap: 12px;
-  align-items: end;
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  box-shadow: var(--shadow);
+/* Range / device buttons and settings, between the readings and the charts. */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  margin-top: 16px;
 }
 
-.controls label {
-  display: grid;
+.chip-row {
+  display: flex;
   gap: 6px;
+  /* One scrollable line on narrow screens rather than wrapping into a block. */
+  overflow-x: auto;
+  scrollbar-width: none;
+  max-width: 100%;
+}
+
+.chip-row::-webkit-scrollbar {
+  display: none;
+}
+
+.chip {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chip[aria-pressed="true"] {
+  border-color: var(--text);
+  background: var(--text);
+  color: var(--bg);
+}
+
+.settings-toggle {
+  display: none;
+  min-height: 36px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Always visible on wide screens; collapsed behind the toggle on phones. */
+.settings-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 18px;
+  margin-left: auto;
+}
+
+.select-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 14px;
   font-weight: 600;
 }
 
-.controls select {
-  width: 100%;
-  min-height: 38px;
+.select-label select {
+  min-height: 36px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--surface-strong);
@@ -127,47 +198,59 @@ input {
 }
 
 .toggle-row {
-  display: flex !important;
-  min-height: 38px;
+  display: inline-flex;
+  min-height: 36px;
   align-items: center;
-  gap: 8px !important;
-  color: var(--text) !important;
+  gap: 8px;
+  color: var(--text);
+  font-size: 14px;
   white-space: nowrap;
+  cursor: pointer;
+}
+
+.toggle-row input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--humidity);
 }
 
 .status-card {
   margin-top: 16px;
-  padding: 22px 26px;
+  padding: 20px 24px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
   box-shadow: var(--shadow);
 }
 
+.status-card-title {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 700;
+}
+
 .status-card-group {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: 16px;
   margin-top: 16px;
 }
 
-.status-card-group .status-card-item {
-  flex: 1 1 320px;
-}
-
 .status-card-group .status-card {
-  margin-top: 8px;
+  margin-top: 0;
 }
 
-.status-card-item-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--muted);
+.outdoor-line {
+  margin: 12px 2px 0;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
 }
 
 .status-metrics {
   display: grid;
-  grid-template-columns: 1fr auto 1fr auto 1fr;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 18px;
 }
@@ -184,8 +267,8 @@ input {
 }
 
 .status-metric.temp .status-value { color: var(--temp); }
-.status-metric.heat .status-value { color: #ca8a04; }
 .status-metric.humidity .status-value { color: var(--humidity); }
+.feels-like { color: #b45309; }
 
 .trend-arrow {
   display: inline-block;
@@ -268,6 +351,11 @@ input {
   color: var(--muted);
 }
 
+.chart-panel,
+.table-panel {
+  margin-top: 16px;
+}
+
 .panel {
   min-width: 0;
   border: 1px solid var(--line);
@@ -278,9 +366,10 @@ input {
 
 .panel-header {
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
+  align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
+  gap: 4px 12px;
   padding: 16px 18px 8px;
 }
 
@@ -298,6 +387,16 @@ input {
   padding: 0 10px 12px;
 }
 
+/* Reserve each chart's height before Plotly draws it, so the page doesn't
+   jump. Must match the heights set in MetricChart / ScatterChart. */
+.chart-host.metric { min-height: 280px; }
+.chart-host.scatter { min-height: 460px; }
+
+@media (max-width: 680px) {
+  .chart-host.metric { min-height: 230px; }
+  .chart-host.scatter { min-height: 380px; }
+}
+
 .table-wrap {
   overflow-x: auto;
   padding: 0 12px 14px;
@@ -305,7 +404,6 @@ input {
 
 table {
   width: 100%;
-  min-width: 520px;
   border-collapse: collapse;
 }
 
@@ -324,9 +422,16 @@ th {
   letter-spacing: 0;
 }
 
-td:nth-child(3),
-td:nth-child(4) {
+td {
   font-variant-numeric: tabular-nums;
+}
+
+th.num,
+td.num {
+  text-align: right;
+}
+
+td.num {
   font-weight: 650;
 }
 
@@ -356,7 +461,7 @@ td:nth-child(4) {
 }
 
 @media (prefers-color-scheme: dark) {
-  .status-metric.heat .status-value {
+  .feels-like {
     color: #fbbf24;
   }
 
@@ -472,46 +577,154 @@ td:nth-child(4) {
   color: var(--humidity);
 }
 
-@media (max-width: 1080px) {
-  .controls {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+/* Touch screens: comfortable tap targets (~44px, Apple's guideline). */
+@media (pointer: coarse) {
+  .chip,
+  .settings-toggle,
+  .select-label select,
+  .toggle-row {
+    min-height: 44px;
+  }
+
+  .toggle-row input {
+    width: 22px;
+    height: 22px;
   }
 }
 
 @media (max-width: 680px) {
   .page {
-    padding: 16px;
+    padding: max(14px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+      max(16px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
   }
 
   .topbar {
-    align-items: flex-start;
-    flex-direction: column;
+    gap: 12px;
+    padding: 4px 0 6px;
   }
 
-  .controls {
-    grid-template-columns: 1fr;
+  .topbar h1 {
+    font-size: 20px;
+  }
+
+  .topbar p {
+    margin-top: 4px;
+    font-size: 14px;
+  }
+
+  /* Icon-only refresh button, sized for a thumb. */
+  .refresh-button {
+    flex-shrink: 0;
+    justify-content: center;
+    width: 44px;
+    min-height: 44px;
+    padding: 0;
+    font-size: 20px;
+  }
+
+  .refresh-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
   }
 
   .status-card {
-    padding: 16px;
+    margin-top: 12px;
+    padding: 14px 16px;
+  }
+
+  .status-card-group {
+    gap: 12px;
+    margin-top: 12px;
+  }
+
+  .status-card-title {
+    margin-bottom: 8px;
   }
 
   .status-metrics {
-    grid-template-columns: 1fr 1fr;
-    gap: 12px 16px;
-  }
-
-  .status-metric.heat {
-    grid-column: 1 / -1;
-    order: 99;
-    margin-top: 4px;
-  }
-
-  .status-divider {
-    display: none;
+    gap: 10px;
   }
 
   .status-value {
-    font-size: 30px;
+    font-size: 32px;
+  }
+
+  .status-label {
+    margin-top: 2px;
+    font-size: 13px;
+  }
+
+  .comfort-gauge {
+    margin-top: 14px;
+  }
+
+  .extra-metrics {
+    gap: 4px 14px;
+    margin-top: 10px;
+    padding-top: 10px;
+    font-size: 13px;
+  }
+
+  .toolbar {
+    gap: 8px;
+    margin-top: 12px;
+  }
+
+  .chip-row {
+    width: 100%;
+  }
+
+  /* The seven range buttons share the row instead of scrolling off it. */
+  .chip-row.ranges .chip {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0 4px;
+  }
+
+  .settings-toggle {
+    display: inline-block;
+  }
+
+  .settings-panel {
+    display: none;
+    width: 100%;
+    margin-left: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--surface);
+  }
+
+  .settings-panel.open {
+    display: flex;
+  }
+
+  .chart-panel,
+  .table-panel {
+    margin-top: 12px;
+  }
+
+  .panel-header {
+    padding: 12px 12px 4px;
+  }
+
+  .panel-header h2 {
+    font-size: 16px;
+  }
+
+  .chart-shell {
+    padding: 0 4px 8px;
+  }
+
+  .table-wrap {
+    padding: 0 6px 8px;
+  }
+
+  th,
+  td {
+    padding: 9px 6px;
   }
 }

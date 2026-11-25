@@ -4,76 +4,67 @@ import type { Trend } from "@/lib/trends";
 import { toFahrenheit, toFahrenheitDelta } from "@/lib/units";
 import { TrendArrow } from "./TrendArrow";
 
+// Only mention "feels like" when it actually differs from the air
+// temperature; below ~27°C the heat index equals it, which is most of the
+// year, and repeating the same number as a headline value was just noise.
+const FEELS_LIKE_MIN_DIFF_C = 0.5;
+
+const signed = (n: number, unit: string) => `${n > 0 ? "+" : n < 0 ? "−" : ""}${formatNumber(Math.abs(n))}${unit}`;
+
 export function StatusCard({
+  title = null,
+  titleHint,
   currentTempC,
   humidity,
   useFahrenheit,
   tempTrend = null,
   humidityTrend = null,
   official = null,
-  timezone,
 }: {
+  /** Device name shown in the card's header (multi-device view). */
+  title?: string | null;
+  /** Tooltip for the title, e.g. the full device ID. */
+  titleHint?: string;
   currentTempC: number | null;
   humidity: number | null;
   useFahrenheit: boolean;
   tempTrend?: Trend;
   humidityTrend?: Trend;
-  official?: { temperature: number; humidity: number; observedAt: string } | null;
-  timezone: string;
+  /** Open-Meteo outdoor reading, for the "vs outdoor" deltas. */
+  official?: { temperature: number; humidity: number } | null;
 }) {
-  const tempUnit = useFahrenheit ? "F" : "C";
-  const displayTemp =
-    currentTempC === null
-      ? null
-      : useFahrenheit
-        ? toFahrenheit(currentTempC)
-        : currentTempC;
-  const heatC = currentTempC === null || humidity === null ? null : heatIndexCelsius(currentTempC, humidity);
-  const displayHeat =
-    heatC === null ? null : useFahrenheit ? toFahrenheit(heatC) : heatC;
+  const unit = useFahrenheit ? "°F" : "°C";
+  const show = (celsius: number) => (useFahrenheit ? toFahrenheit(celsius) : celsius);
+  const haveBoth = currentTempC !== null && humidity !== null;
 
-  const dewPointC =
-    currentTempC === null || humidity === null ? null : dewPointCelsius(currentTempC, humidity);
-  const displayDewPoint =
-    dewPointC === null ? null : useFahrenheit ? toFahrenheit(dewPointC) : dewPointC;
-  const absHumidity =
-    currentTempC === null || humidity === null ? null : absoluteHumidity(currentTempC, humidity);
+  const heatC = haveBoth ? heatIndexCelsius(currentTempC, humidity) : null;
+  const feelsLikeC =
+    heatC !== null && currentTempC !== null && Math.abs(heatC - currentTempC) >= FEELS_LIKE_MIN_DIFF_C ? heatC : null;
+  const dewPointC = haveBoth ? dewPointCelsius(currentTempC, humidity) : null;
+  const absHumidity = haveBoth ? absoluteHumidity(currentTempC, humidity) : null;
 
-  const displayOfficialTemp =
-    official === null ? null : useFahrenheit ? toFahrenheit(official.temperature) : official.temperature;
   // Delta is computed in Celsius first, then scaled — converting each side
   // to °F independently and subtracting would double-apply the +32 offset.
-  const officialDeltaC = currentTempC === null || official === null ? null : currentTempC - official.temperature;
-  const displayOfficialDelta =
-    officialDeltaC === null ? null : useFahrenheit ? toFahrenheitDelta(officialDeltaC) : officialDeltaC;
-  const officialHumidityDelta =
-    humidity === null || official === null ? null : humidity - official.humidity;
-  const officialObservedLabel =
-    official === null
-      ? null
-      : new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", timeZone: timezone }).format(
-          new Date(official.observedAt),
-        );
+  const outdoorDeltaC = currentTempC !== null && official ? currentTempC - official.temperature : null;
+  const outdoorDeltaHumidity = humidity !== null && official ? humidity - official.humidity : null;
 
   // Clamp the marker so it sits inside the gauge for any input.
   const markerPct = humidity === null ? null : Math.max(0, Math.min(100, humidity));
 
   return (
     <section className="status-card">
+      {title ? (
+        <h2 className="status-card-title" title={titleHint}>
+          {title}
+        </h2>
+      ) : null}
       <div className="status-metrics">
         <div className="status-metric temp">
           <div className="status-value">
-            {displayTemp === null ? "--" : `${formatNumber(displayTemp)}°${tempUnit}`}
+            {currentTempC === null ? "--" : `${formatNumber(show(currentTempC))}${unit}`}
             <TrendArrow trend={tempTrend} />
           </div>
           <div className="status-label">Temperature</div>
-        </div>
-        <div className="status-divider" />
-        <div className="status-metric heat">
-          <div className="status-value">
-            {displayHeat === null ? "--" : `${formatNumber(displayHeat)}°${tempUnit}`}
-          </div>
-          <div className="status-label">Heat Index</div>
         </div>
         <div className="status-divider" />
         <div className="status-metric humidity">
@@ -96,31 +87,26 @@ export function StatusCard({
         </div>
       </div>
       <div className="extra-metrics">
+        {feelsLikeC !== null ? (
+          <span className="feels-like">
+            <span className="extra-metric-label">Feels like</span> {formatNumber(show(feelsLikeC))}
+            {unit}
+          </span>
+        ) : null}
         <span>
           <span className="extra-metric-label">Dew point</span>{" "}
-          {displayDewPoint === null ? "--" : `${formatNumber(displayDewPoint)}°${tempUnit}`}
+          {dewPointC === null ? "--" : `${formatNumber(show(dewPointC))}${unit}`}
         </span>
         <span>
-          <span className="extra-metric-label">Absolute humidity</span>{" "}
+          <span className="extra-metric-label">Abs. humidity</span>{" "}
           {absHumidity === null ? "--" : `${formatNumber(absHumidity)} g/m³`}
         </span>
-        {official !== null ? (
-          <>
-            <span title={officialObservedLabel ? `Open-Meteo, as of ${officialObservedLabel}` : "Open-Meteo"}>
-              <span className="extra-metric-label">Official temp</span>{" "}
-              {displayOfficialTemp === null ? "--" : `${formatNumber(displayOfficialTemp)}°${tempUnit}`}
-              {displayOfficialDelta === null
-                ? ""
-                : ` (${displayOfficialDelta > 0 ? "+" : ""}${formatNumber(displayOfficialDelta)}°${tempUnit} vs sensor)`}
-            </span>
-            <span title={officialObservedLabel ? `Open-Meteo, as of ${officialObservedLabel}` : "Open-Meteo"}>
-              <span className="extra-metric-label">Official humidity</span>{" "}
-              {formatNumber(official.humidity)}%
-              {officialHumidityDelta === null
-                ? ""
-                : ` (${officialHumidityDelta > 0 ? "+" : ""}${formatNumber(officialHumidityDelta)}% vs sensor)`}
-            </span>
-          </>
+        {outdoorDeltaC !== null && outdoorDeltaHumidity !== null ? (
+          <span title="This sensor minus the official outdoor reading">
+            <span className="extra-metric-label">vs outdoor</span>{" "}
+            {signed(useFahrenheit ? toFahrenheitDelta(outdoorDeltaC) : outdoorDeltaC, unit)} ·{" "}
+            {signed(outdoorDeltaHumidity, "%")}
+          </span>
         ) : null}
       </div>
     </section>

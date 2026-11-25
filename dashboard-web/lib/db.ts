@@ -121,6 +121,24 @@ async function fetchLatest(config: { url: string; key: string }): Promise<Readin
   return row ? toReading(row) : null;
 }
 
+// Heartbeat written by scripts/check-stale.mjs on every run. Best-effort:
+// any failure (older schema without the column, missing table) yields null,
+// which the dashboard treats as "unknown" rather than as a warning, and
+// never fails the readings request itself.
+async function fetchAlertsCheckedAt(config: { url: string; key: string }): Promise<string | null> {
+  try {
+    const res = await fetch(`${config.url}/rest/v1/alert_state?select=last_checked_at&id=eq.1`, {
+      headers: { apikey: config.key, Authorization: `Bearer ${config.key}` },
+      cache: "no-store",
+    });
+    if (!res.ok) return null;
+    const [row] = (await res.json()) as { last_checked_at?: string | null }[];
+    return row?.last_checked_at ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function fetchDownsampled(
   config: { url: string; key: string },
   cutoffIso: string | null,
@@ -192,6 +210,7 @@ export async function loadReadings(
       if (page.length < PAGE_SIZE) break;
     }
     const readings = sortNewestFirst(allRows.map(toReading));
+    const alertsCheckedAt = await fetchAlertsCheckedAt(config);
     return {
       ok: true,
       generatedAt: new Date().toISOString(),
@@ -202,6 +221,7 @@ export async function loadReadings(
       rangeHours,
       readings,
       latest: readings[0] ?? null,
+      alertsCheckedAt,
     };
   }
 
@@ -213,10 +233,11 @@ export async function loadReadings(
     ? new Date(Date.now() - rangeHours * 3_600_000).toISOString()
     : null;
 
-  const [rowsInRange, rows, latest] = await Promise.all([
+  const [rowsInRange, rows, latest, alertsCheckedAt] = await Promise.all([
     fetchExactCount(config, cutoffIso),
     fetchDownsampled(config, cutoffIso, maxPoints),
     fetchLatest(config),
+    fetchAlertsCheckedAt(config),
   ]);
 
   const readings = sortNewestFirst(rows.map(toReading));
@@ -232,5 +253,6 @@ export async function loadReadings(
     rangeHours,
     readings,
     latest,
+    alertsCheckedAt,
   };
 }

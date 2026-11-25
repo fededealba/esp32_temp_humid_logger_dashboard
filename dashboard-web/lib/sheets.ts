@@ -28,6 +28,11 @@ export type ReadingsResponse = {
    * outage that's longer than the selected window, when `readings` is empty.
    */
   latest: Reading | null;
+  /**
+   * When the Telegram stale-check last ran (alert_state.last_checked_at),
+   * or null when unknown (Sheets source, or schema without the column).
+   */
+  alertsCheckedAt: string | null;
 };
 
 export type LoadReadingsOptions = {
@@ -306,5 +311,6 @@ export async function loadReadings(options: LoadReadingsOptions = {}): Promise<R
     rangeHours,
     readings,
     latest: allReadings[0] ?? null,
+    alertsCheckedAt: null, // the stale-check only runs against Supabase
   };
 }

@@ -104,6 +104,19 @@ async function main() {
       }),
     });
   }
+
+  // Heartbeat for the dashboard's "alerts aren't running" warning. Kept
+  // separate from the transition PATCH above and non-fatal, so a schema
+  // that predates the last_checked_at column can't break alerting itself.
+  try {
+    await supabaseFetch(`${supabaseUrl}/rest/v1/alert_state?id=eq.1`, supabaseKey, {
+      method: "PATCH",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({ last_checked_at: new Date().toISOString() }),
+    });
+  } catch (error) {
+    console.warn("heartbeat not recorded (run scripts/supabase-schema.sql?):", error.message);
+  }
 }
 
 main().catch((error) => {

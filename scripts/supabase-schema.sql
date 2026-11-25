@@ -120,4 +120,10 @@ insert into public.alert_state (id, is_stale)
 values (1, false)
 on conflict (id) do nothing;
 
+-- Heartbeat: set on every stale-check run, not just on transitions. The
+-- dashboard warns when it's old, which is the only visible sign that the
+-- GitHub Actions schedule itself has stopped (GitHub disables scheduled
+-- workflows after 60 days of repo inactivity, silently).
+alter table public.alert_state add column if not exists last_checked_at timestamptz;
+
 alter table public.alert_state enable row level security;

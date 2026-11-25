@@ -247,6 +247,27 @@ describe("lib/db", () => {
     expect(result.latest?.timestampMs).toBe(NOW);
   });
 
+  it("returns the stale-check heartbeat from alert_state", async () => {
+    const base = makeMockFetch();
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) =>
+      new URL(url).pathname === "/rest/v1/alert_state"
+        ? Promise.resolve(jsonResponse([{ last_checked_at: "2026-07-01T11:57:00+00:00" }]))
+        : base(url, init),
+    ));
+    const { loadReadings } = await import("./db");
+    expect((await loadReadings({ rangeHours: 24 })).alertsCheckedAt).toBe("2026-07-01T11:57:00+00:00");
+    expect((await loadReadings({ rangeHours: null, limit: 10 })).alertsCheckedAt).toBe("2026-07-01T11:57:00+00:00");
+  });
+
+  it("treats a missing heartbeat as unknown without failing the readings request", async () => {
+    // makeMockFetch 404s alert_state, like a schema without the table/column.
+    vi.stubGlobal("fetch", makeMockFetch());
+    const { loadReadings } = await import("./db");
+    const result = await loadReadings({ rangeHours: 24 });
+    expect(result.ok).toBe(true);
+    expect(result.alertsCheckedAt).toBeNull();
+  });
+
   it("legacy bare-limit path returns raw, unsampled rows newest-first", async () => {
     vi.stubGlobal("fetch", makeMockFetch());
     const { loadReadings } = await import("./db");

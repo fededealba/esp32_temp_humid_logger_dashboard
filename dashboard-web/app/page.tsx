@@ -28,6 +28,8 @@ type ApiResponse =
       readings: Reading[];
       // Newest reading overall, regardless of range_hours.
       latest: Reading | null;
+      // Last run of the Telegram stale-check; null when unknown.
+      alertsCheckedAt: string | null;
     }
   | {
       ok: false;
@@ -77,6 +79,10 @@ const RANGES = [
 const POST_INTERVAL_MS = 60 * 1000;
 // Warn when the newest reading is older than ~5 missed posts.
 const STALE_AFTER_MS = 5 * POST_INTERVAL_MS;
+// The stale-check is scheduled every 5 min, but GitHub's scheduler has been
+// observed skipping up to ~2h under load; 6h of silence means it's stopped
+// (e.g. GitHub auto-disabled it after 60 days without commits).
+const ALERTS_STALE_AFTER_MS = 6 * 60 * 60 * 1000;
 
 // Per-device line colors for the temperature/humidity charts. Index 0 in
 // each palette matches the original single-device color exactly, so nothing
@@ -1221,6 +1227,11 @@ export default function Page() {
   const deviceMissingFromRange =
     data?.ok === true && device !== "all" && filtered.length === 0 && newestForDevice === null;
 
+  // Only warn on a known-old heartbeat; null means "unknown" (Sheets source,
+  // or schema predating the column), not "broken".
+  const alertsCheckedMs = data?.ok && data.alertsCheckedAt ? Date.parse(data.alertsCheckedAt) : NaN;
+  const alertsStale = Number.isFinite(alertsCheckedMs) && Date.now() - alertsCheckedMs > ALERTS_STALE_AFTER_MS;
+
   // `sheetTitle` doubles as a data-source tag: "Supabase" when reading from
   // the database, otherwise the Google Sheet's title.
   const dataSource = data?.ok ? (data.sheetTitle === "Supabase" ? "Supabase" : "Google Sheets") : null;
@@ -1295,6 +1306,14 @@ export default function Page() {
       ) : deviceMissingFromRange ? (
         <div className="warning-banner" role="status">
           ⚠ No readings from {device} in the selected range — the device may be offline. Try a longer range.
+        </div>
+      ) : null}
+
+      {alertsStale ? (
+        <div className="warning-banner" role="status">
+          ⚠ Offline alerts haven&apos;t run for {formatAge(Date.now() - alertsCheckedMs)}, so Telegram won&apos;t
+          notify you if the station goes quiet. GitHub may have disabled the stale-check workflow: re-enable it from
+          the repository&apos;s Actions tab.
         </div>
       ) : null}
 

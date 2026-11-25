@@ -105,6 +105,54 @@ as $$
   offset greatest(page_offset, 0);
 $$;
 
+-- Single-pass successor to readings_downsampled (above). The paged version
+-- re-ran the whole window computation for every 1,000-row page, so "all
+-- time" over ~480k rows cost 4 sequential full passes (~5s) plus a
+-- separate count=exact (~1.7s). This returns everything as one JSON value
+-- -- a scalar, so Supabase's 1,000-row API cap doesn't apply and no paging
+-- is needed -- together with the in-range total, replacing the count query.
+--
+-- Ranking works on (device_id, received_at, id) only, which the index below
+-- covers, so it can run as an index-only scan in partition order instead
+-- of sorting the full rows; full rows are fetched by primary key only for
+-- the ~2,000-per-device sample. The cutoff uses coalesce rather than
+-- `cutoff is null or ...` so the condition stays index-friendly.
+create index if not exists readings_device_received_idx
+  on public.readings (device_id, received_at desc) include (id);
+
+create or replace function public.readings_downsampled_json(
+  target_points integer default 2000,
+  cutoff timestamptz default null
+)
+returns json
+language sql
+stable
+as $$
+  with ranked as (
+    select
+      r.id,
+      row_number() over (partition by r.device_id order by r.received_at desc) - 1 as rn,
+      count(*) over (partition by r.device_id) as total
+    from public.readings r
+    where r.received_at >= coalesce(cutoff, '-infinity'::timestamptz)
+  ),
+  picked as (
+    select id
+    from ranked
+    where total <= greatest(target_points, 1)
+       or mod(rn, greatest(ceil(total::numeric / greatest(target_points, 1))::int, 1)) = 0
+  ),
+  sampled as (
+    select r.id, r.device_id, r.temperature, r.humidity, r.device_ts, r.received_at
+    from public.readings r
+    join picked p on p.id = r.id
+  )
+  select json_build_object(
+    'total_in_range', (select count(*) from ranked),
+    'rows', coalesce((select json_agg(s order by s.received_at desc) from sampled s), '[]'::json)
+  );
+$$;
+
 -- Single-row table tracking whether the last stale-check found the device
 -- offline, and when we last messaged Telegram about it. Lets
 -- scripts/check-stale.mjs alert once per outage (and once on recovery)

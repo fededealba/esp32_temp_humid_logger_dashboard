@@ -11,17 +11,11 @@ type SupabaseRow = {
   received_at: string | null;
 };
 
+// Page size and row cap for the bare `?limit=N` legacy path below, which is
+// rare and bounded by definition; the range/all paths downsample in Postgres
+// in a single call instead.
 const PAGE_SIZE = 1_000;
-// Only used by the bare `?limit=N` legacy path below, which is rare and
-// bounded by definition; the range/all paths downsample in Postgres instead
-// of paginating the whole table.
 const MAX_ROWS = 20_000;
-// Safety ceiling for fetchDownsampled's pagination loop. readings_downsampled
-// caps each *device* at target_points rows (not the whole response), so the
-// total across N devices can be up to target_points * N — this bound is
-// independent of target_points so it doesn't silently truncate as more
-// devices are added, while still capping worst-case request count.
-const MAX_DOWNSAMPLED_ROWS = 20_000;
 
 function getConfig(): { url: string; key: string } | null {
   const url = process.env.SUPABASE_URL;
@@ -85,29 +79,6 @@ async function fetchPage(
   return res.json() as Promise<SupabaseRow[]>;
 }
 
-async function fetchExactCount(
-  config: { url: string; key: string },
-  cutoffIso: string | null,
-): Promise<number> {
-  const params = new URLSearchParams({ select: "id", limit: "1" });
-  if (cutoffIso) params.append("received_at", `gte.${cutoffIso}`);
-  const res = await fetch(`${config.url}/rest/v1/readings?${params}`, {
-    headers: {
-      apikey: config.key,
-      Authorization: `Bearer ${config.key}`,
-      Prefer: "count=exact",
-    },
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    throw new Error(`Supabase returned ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  }
-  const range = res.headers.get("content-range"); // e.g. "0-0/76612"
-  const total = range ? Number(range.split("/")[1]) : NaN;
-  if (!Number.isFinite(total)) throw new Error("Supabase did not return an exact row count.");
-  return total;
-}
-
 // Newest row in the whole table, ignoring any time window, so the dashboard
 // can still flag an outage that's longer than the selected range (in which
 // case the windowed result is empty). Cheap: served by readings_received_at_idx.
@@ -138,47 +109,35 @@ async function fetchAlertsCheckedAt(config: { url: string; key: string }): Promi
   }
 }
 
+// One call to readings_downsampled_json (scripts/supabase-schema.sql): the
+// per-device stride sample of everything since `cutoff`, plus the exact
+// in-range row count. It returns a single JSON value rather than a row set,
+// so Supabase's 1,000-row API cap doesn't apply and no paging is needed --
+// the old paged function re-ran the full window computation per page, which
+// made "all time" take ~5s at ~480k rows.
 async function fetchDownsampled(
   config: { url: string; key: string },
   cutoffIso: string | null,
   targetPoints: number,
-): Promise<SupabaseRow[]> {
-  // PostgREST doesn't paginate `setof` RPC results via Range headers (it
-  // silently returned the same first chunk on every page when tested), so
-  // page_offset/page_limit are function arguments handled inside the SQL
-  // instead. The loop bound is MAX_DOWNSAMPLED_ROWS, not targetPoints: the
-  // SQL function caps each device at targetPoints rows independently, so
-  // the total response can exceed targetPoints once there's more than one
-  // device — bounding this loop by targetPoints alone would silently drop
-  // later devices' data.
-  const url = `${config.url}/rest/v1/rpc/readings_downsampled`;
-  const rows: SupabaseRow[] = [];
-  for (let offset = 0; offset < MAX_DOWNSAMPLED_ROWS; offset += PAGE_SIZE) {
-    const pageLimit = PAGE_SIZE;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        apikey: config.key,
-        Authorization: `Bearer ${config.key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        target_points: targetPoints,
-        cutoff: cutoffIso,
-        page_offset: offset,
-        page_limit: pageLimit,
-      }),
-      cache: "no-store",
-    });
-    if (!res.ok) {
-      throw new Error(`Supabase downsample query failed (${res.status}): ${(await res.text()).slice(0, 300)}`);
-    }
-    const page = (await res.json()) as SupabaseRow[];
-    if (page.length === 0) break;
-    rows.push(...page);
-    if (page.length < pageLimit) break;
+): Promise<{ rows: SupabaseRow[]; totalInRange: number }> {
+  const res = await fetch(`${config.url}/rest/v1/rpc/readings_downsampled_json`, {
+    method: "POST",
+    headers: {
+      apikey: config.key,
+      Authorization: `Bearer ${config.key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ target_points: targetPoints, cutoff: cutoffIso }),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`Supabase downsample query failed (${res.status}): ${(await res.text()).slice(0, 300)}`);
   }
-  return rows;
+  const body = (await res.json()) as { rows?: SupabaseRow[]; total_in_range?: number };
+  if (!Array.isArray(body.rows) || typeof body.total_in_range !== "number") {
+    throw new Error("Supabase downsample query returned an unexpected shape.");
+  }
+  return { rows: body.rows, totalInRange: body.total_in_range };
 }
 
 export async function loadReadings(
@@ -222,16 +181,13 @@ export async function loadReadings(
     };
   }
 
-  // Range / "all" path: downsample in Postgres (readings_downsampled, from
-  // scripts/supabase-schema.sql) so the payload stays ~maxPoints rows no
-  // matter how large the table gets, instead of paginating everything over
-  // HTTP and thinning it out here.
+  // Range / "all" path: downsample in Postgres so the payload stays
+  // ~maxPoints rows per device no matter how large the table gets.
   const cutoffIso = rangeHours !== null && rangeHours > 0
     ? new Date(Date.now() - rangeHours * 3_600_000).toISOString()
     : null;
 
-  const [rowsInRange, rows, latest, alertsCheckedAt] = await Promise.all([
-    fetchExactCount(config, cutoffIso),
+  const [{ rows, totalInRange: rowsInRange }, latest, alertsCheckedAt] = await Promise.all([
     fetchDownsampled(config, cutoffIso, maxPoints),
     fetchLatest(config),
     fetchAlertsCheckedAt(config),

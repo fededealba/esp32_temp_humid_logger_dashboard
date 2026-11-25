@@ -65,41 +65,29 @@ function downsample(rows: typeof ALL_ROWS, targetPoints: number) {
   return out.sort((a, b) => Date.parse(b.received_at) - Date.parse(a.received_at));
 }
 
-// Mirrors the real Supabase project's behavior as observed in manual
-// testing: table/RPC responses honor an explicit `limit`/page_offset, and
-// `Prefer: count=exact` returns the true row count via Content-Range even
-// when the body itself is capped.
+// Mirrors the real Supabase project's behavior: readings_downsampled_json
+// returns one JSON value with the per-device sample and the in-range total,
+// and the table endpoint honors Range headers.
 function makeMockFetch(sourceRows: typeof ALL_ROWS = ALL_ROWS) {
   return vi.fn((url: string, init?: RequestInit) => {
     const u = new URL(url);
     const headers = new Headers(init?.headers);
 
-    if (u.pathname === "/rest/v1/rpc/readings_downsampled") {
+    if (u.pathname === "/rest/v1/rpc/readings_downsampled_json") {
       const body = JSON.parse(init!.body as string);
       let rows = sourceRows;
       if (body.cutoff) {
         const cutoffMs = Date.parse(body.cutoff);
         rows = rows.filter((r) => Date.parse(r.received_at) >= cutoffMs);
       }
-      const sampled = downsample(rows, body.target_points);
-      const page = sampled.slice(body.page_offset, body.page_offset + body.page_limit);
-      return Promise.resolve(jsonResponse(page));
+      return Promise.resolve(
+        jsonResponse({ rows: downsample(rows, body.target_points), total_in_range: rows.length }),
+      );
     }
 
     if (u.pathname === "/rest/v1/readings") {
-      if (headers.get("Prefer") === "count=exact") {
-        const cutoffParam = u.searchParams.get("received_at");
-        let rows = sourceRows;
-        if (cutoffParam?.startsWith("gte.")) {
-          const cutoffMs = Date.parse(cutoffParam.slice(4));
-          rows = rows.filter((r) => Date.parse(r.received_at) >= cutoffMs);
-        }
-        return Promise.resolve(
-          jsonResponse(rows.slice(0, 1), { "content-range": `0-0/${rows.length}` }),
-        );
-      }
-
-      // Legacy bare-limit path: raw pagination via Range headers.
+      // Raw pagination via Range headers (legacy bare-limit path, and the
+      // single-row `latest` lookup).
       const rangeHeader = headers.get("Range");
       let from = 0;
       let to = sourceRows.length - 1;
@@ -140,15 +128,16 @@ describe("lib/db", () => {
     await expect(loadReadings()).rejects.toThrow("Supabase is not configured.");
   });
 
-  it("downsamples across multiple RPC pages without dropping or duplicating rows", async () => {
+  it("returns the whole per-device sample without dropping or duplicating rows", async () => {
     vi.stubGlobal("fetch", makeMockFetch());
     const { loadReadings } = await import("./db");
     const result = await loadReadings({ rangeHours: null, limit: Number.MAX_SAFE_INTEGER, maxPoints: 2000 });
 
     expect(result.rowsInRange).toBe(TOTAL);
-    // stride=2 for 2500 rows / 2000 target -> 1250 sampled rows, spanning
-    // more than one 1000-row page.
-    expect(result.readings.length).toBeGreaterThan(1000);
+    // stride=2 for 2500 rows / 2000 target -> 1250 sampled rows: more than
+    // Supabase's 1,000-row cap on row-set responses, which the JSON-valued
+    // function isn't subject to.
+    expect(result.readings).toHaveLength(1250);
     const ids = result.readings.map((r) => r.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
@@ -184,23 +173,33 @@ describe("lib/db", () => {
     expect(gaps.size).toBe(1); // exactly one distinct gap size = perfectly even spacing
   });
 
-  it("requests each downsample page with an increasing page_offset", async () => {
-    const offsets: number[] = [];
-    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
-      const u = new URL(url);
-      if (u.pathname === "/rest/v1/rpc/readings_downsampled") {
-        offsets.push(JSON.parse(init!.body as string).page_offset);
-      }
-      return makeMockFetch()(url, init);
-    });
+  it("fetches the sample in a single RPC call, with no separate count query", async () => {
+    const fetchMock = makeMockFetch();
     vi.stubGlobal("fetch", fetchMock);
     const { loadReadings } = await import("./db");
-    await loadReadings({ rangeHours: null, limit: Number.MAX_SAFE_INTEGER, maxPoints: 2000 });
+    await loadReadings({ rangeHours: 24, maxPoints: 500 });
 
-    // Regression guard: PostgREST does not paginate `setof` RPC results via
-    // Range headers (it silently repeats the first page), which is why
-    // page_offset/page_limit must be explicit function arguments instead.
-    expect(offsets).toEqual([0, 1000]);
+    // Regression guard: the old paged function re-ran the full window
+    // computation once per 1,000-row page (4 passes for "all", ~5s), plus a
+    // separate count=exact over the whole table.
+    const calls = fetchMock.mock.calls.map(([url, init]) => ({ url: new URL(url), init }));
+    const rpcCalls = calls.filter((c) => c.url.pathname.startsWith("/rest/v1/rpc/"));
+    expect(rpcCalls).toHaveLength(1);
+    expect(rpcCalls[0].url.pathname).toBe("/rest/v1/rpc/readings_downsampled_json");
+    const body = JSON.parse(rpcCalls[0].init!.body as string);
+    expect(body.target_points).toBe(500);
+    expect(typeof body.cutoff).toBe("string");
+    expect(calls.some((c) => new Headers(c.init?.headers).get("Prefer") === "count=exact")).toBe(false);
+  });
+
+  it("reports an unexpected RPC response shape instead of returning empty data", async () => {
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) =>
+      new URL(url).pathname === "/rest/v1/rpc/readings_downsampled_json"
+        ? Promise.resolve(jsonResponse([]))
+        : makeMockFetch()(url, init),
+    ));
+    const { loadReadings } = await import("./db");
+    await expect(loadReadings({ rangeHours: 24 })).rejects.toThrow(/unexpected shape/);
   });
 
   it("does not truncate a large 'all time' result to a fixed row cap", async () => {
@@ -283,22 +282,25 @@ describe("lib/db", () => {
       "fetch",
       vi.fn((url: string) => {
         const u = new URL(url);
-        if (u.pathname === "/rest/v1/rpc/readings_downsampled") {
+        if (u.pathname === "/rest/v1/rpc/readings_downsampled_json") {
           return Promise.resolve(
-            jsonResponse([
-              {
-                id: 1,
-                device_id: "x",
-                temperature: 1,
-                humidity: 2,
-                device_ts: "2026-01-01T00:00:00Z",
-                received_at: "2026-01-02T00:00:00Z",
-              },
-            ]),
+            jsonResponse({
+              total_in_range: 1,
+              rows: [
+                {
+                  id: 1,
+                  device_id: "x",
+                  temperature: 1,
+                  humidity: 2,
+                  device_ts: "2026-01-01T00:00:00Z",
+                  received_at: "2026-01-02T00:00:00Z",
+                },
+              ],
+            }),
           );
         }
-        // The exact-count query, run in parallel; content doesn't matter here.
-        return Promise.resolve(jsonResponse([{ id: 1 }], { "content-range": "0-0/1" }));
+        // The parallel `latest` / heartbeat lookups; content doesn't matter here.
+        return Promise.resolve(jsonResponse([]));
       }),
     );
     const { loadReadings } = await import("./db");

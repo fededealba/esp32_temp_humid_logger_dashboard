@@ -67,56 +67,26 @@ create policy "anon can insert readings"
 -- The stride is computed per device_id (partition by), not globally: with
 -- two or more devices interleaved in time, a single global stride picks
 -- rows without regard to which device they belong to, so each device's own
--- line ends up with uneven clusters and gaps instead of a smooth series —
+-- line ends up with uneven clusters and gaps instead of a smooth series --
 -- this was live and broken for a full day before being caught. Each device
 -- independently gets up to target_points rows.
 --
--- page_offset/page_limit are handled inside the function (not via
--- PostgREST's Range header) because PostgREST does not paginate `setof`
--- RPC results reliably — every page request silently returned the same
--- first chunk when tested against Range headers instead.
-create or replace function public.readings_downsampled(
-  target_points integer default 2000,
-  cutoff timestamptz default null,
-  page_offset integer default 0,
-  page_limit integer default 1000
-)
-returns setof public.readings
-language sql
-stable
-as $$
-  with base as (
-    select
-      r.*,
-      row_number() over (partition by r.device_id order by r.received_at desc) - 1 as rn,
-      count(*) over (partition by r.device_id) as total
-    from public.readings r
-    where cutoff is null or r.received_at >= cutoff
-  ),
-  sampled as (
-    select id, device_id, temperature, humidity, device_ts, received_at
-    from base
-    where total <= greatest(target_points, 1)
-       or mod(rn, greatest(ceil(total::numeric / greatest(target_points, 1))::int, 1)) = 0
-    order by received_at desc
-  )
-  select * from sampled
-  limit greatest(page_limit, 0)
-  offset greatest(page_offset, 0);
-$$;
-
--- Single-pass successor to readings_downsampled (above). The paged version
--- re-ran the whole window computation for every 1,000-row page, so "all
--- time" over ~480k rows cost 4 sequential full passes (~5s) plus a
--- separate count=exact (~1.7s). This returns everything as one JSON value
--- -- a scalar, so Supabase's 1,000-row API cap doesn't apply and no paging
--- is needed -- together with the in-range total, replacing the count query.
+-- Everything comes back as one JSON value, with the in-range total: a
+-- scalar isn't subject to Supabase's 1,000-row API cap, so no paging is
+-- needed. Its predecessor, readings_downsampled, returned a row set and
+-- had to be paged, re-running the whole window computation for every
+-- 1,000-row page -- "all time" over ~480k rows cost 4 sequential full
+-- passes (~5s) plus a separate count=exact (~1.7s), and once hit the
+-- statement timeout. (PostgREST's Range header couldn't page it either:
+-- every page silently returned the same first chunk.)
 --
 -- Ranking works on (device_id, received_at, id) only, which the index below
 -- covers, so it can run as an index-only scan in partition order instead
 -- of sorting the full rows; full rows are fetched by primary key only for
 -- the ~2,000-per-device sample. The cutoff uses coalesce rather than
 -- `cutoff is null or ...` so the condition stays index-friendly.
+drop function if exists public.readings_downsampled(integer, timestamptz, integer, integer);
+
 create index if not exists readings_device_received_idx
   on public.readings (device_id, received_at desc) include (id);
 

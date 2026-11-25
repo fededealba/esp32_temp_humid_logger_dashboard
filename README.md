@@ -164,6 +164,10 @@ const char* WIFI_PASSWORD = "your-wifi-password";
 // the anon/publishable key, never service_role.
 const char* SUPABASE_URL = "";
 const char* SUPABASE_ANON_KEY = "";
+
+// Optional: enables over-the-air updates (see "Updating over WiFi" below).
+// Leave it out to disable OTA. Generate one with: openssl rand -hex 16
+#define OTA_PASSWORD "a-long-random-password"
 ```
 
 Then verify the firmware settings in
@@ -292,11 +296,33 @@ PORT=/dev/ttyUSB0 make firmware-monitor
 The monitor leaves `DTR` and `RTS` off so ESP32 boards are not held in reset by
 the serial terminal.
 
+### Updating over WiFi
+
+When `OTA_PASSWORD` is defined in `secrets.h`, the firmware listens for
+password-protected updates on your LAN as `esp32-weather.local`. After one
+USB flash of an OTA-enabled build, later updates need no cable:
+
+```sh
+make firmware-upload-ota
+OTA_HOST=192.168.1.50 make firmware-upload-ota   # if .local names don't resolve
+```
+
+The password is read from `secrets.h`, so the upload always matches what the
+device was built with. The ESP32 prints its IP on the serial monitor at boot
+(`OTA ready: ...`). It only checks for uploads between phases of its 60s
+sensor cycle, so an attempt that lands mid-cycle can time out: just rerun it.
+If an upload fails partway, the device keeps running the old firmware.
+
+### Board and partition scheme
+
 The default board FQBN is `esp32:esp32:esp32`, compiled with
-`PartitionScheme=huge_app` (a 3MB app partition instead of the default
-1.2MB — NimBLE-Arduino alone used most of that). This drops OTA support,
-which the project doesn't use since flashing is always via USB. Override
-`PARTITION_SCHEME` or `FQBN` if your board needs a different profile:
+`PartitionScheme=min_spiffs`: two 1.9MB app slots, so an OTA update can be
+written into the inactive slot while the current firmware runs. The default
+scheme's 1.2MB slots are too small (NimBLE-Arduino alone used most of one).
+Changing the partition scheme rewrites the flash layout, which only a USB
+upload can do; builds before this change used `huge_app`, so the first
+flash after it must be over USB. Override `PARTITION_SCHEME` or `FQBN` if
+your board needs a different profile:
 
 ```sh
 FQBN=esp32:esp32:esp32doit-devkit-v1 make firmware-compile
@@ -420,7 +446,7 @@ Firmware constants:
 - `TP357_NAME_PREFIX`: Bluetooth name prefix used to find the TP357.
 - Google Forms `entry.*` IDs in `buildFormPayload(...)`.
 - In `secrets.h`: `WIFI_SSID`, `WIFI_PASSWORD`, `SUPABASE_URL`,
-  `SUPABASE_ANON_KEY`.
+  `SUPABASE_ANON_KEY`, and optionally `OTA_PASSWORD`.
 
 The previous Flask settings `API_BASE_URL`, `DASHBOARD_API_KEY`, and
 `INGEST_API_KEY` are not used by the current Google Forms/Sheets flow.

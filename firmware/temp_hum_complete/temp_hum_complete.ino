@@ -5,6 +5,7 @@
 #include <WiFiClientSecure.h>
 #include <DHT.h>
 #include <NimBLEDevice.h>
+#include <ArduinoOTA.h>
 #include <time.h>
 #include <string.h>
 #if __has_include(<ArduinoJson.h>)
@@ -62,6 +63,13 @@ const uint16_t dhtRetryDelayMs = 2000; // DHT22 prefers >=2s between attempts
 const char* TP357_NAME_PREFIX = "TP357";
 const uint32_t BLE_SCAN_MS = 5000; // TP357 advertises every ~2-3s
 
+// Over-the-air updates (`make firmware-upload-ota`). Only enabled when
+// secrets.h defines OTA_PASSWORD, so a build without one never listens for
+// firmware uploads. Needs an OTA-capable partition scheme (min_spiffs, the
+// Makefile default); the first flash after switching schemes must be USB.
+const char* OTA_HOSTNAME = "esp32-weather"; // reachable as esp32-weather.local
+bool otaStarted = false;
+
 // Forward declarations
 void connectWiFi();
 void setupTime();
@@ -77,6 +85,8 @@ bool decodeTP357ManufacturerData(const std::string &data, float &tempC, float &h
 bool scanForTP357(String &label, float &tempC, float &humidityPct);
 unsigned long currentInterval();
 void onWiFiEvent(WiFiEvent_t event);
+void startOTA();
+void handleOTA();
 
 void setup() {
   Serial.begin(115200);
@@ -84,6 +94,7 @@ void setup() {
   connectWiFi();
   WiFi.onEvent(onWiFiEvent);
   WiFi.setAutoReconnect(true);
+  startOTA(); // no-op until WiFi is up; retried from handleOTA()
 
   setupTime();
   dht.begin();
@@ -112,6 +123,7 @@ void loop() {
     Serial.println("WiFi lost, attempting reconnect...");
     connectWiFi();
   }
+  handleOTA();
   unsigned long currentMillis = millis();
 
   // Drift-free interval scheduling with rollover safety
@@ -171,6 +183,10 @@ void loop() {
       }
     }
 
+    // The cycle blocks for ~10-25s (DHT retries, HTTPS posts, BLE scan);
+    // servicing OTA between phases keeps an upload attempt from timing out.
+    handleOTA();
+
     // Opportunistically pick up the TP357's broadcast too, whether or not the
     // DHT22 read above succeeded. This is a bonus second sensor, not the
     // primary reading, so a miss here doesn't affect backoff.
@@ -189,6 +205,38 @@ void loop() {
 }
 
 // --- Helpers ---
+
+void startOTA() {
+#ifdef OTA_PASSWORD
+  if (otaStarted || WiFi.status() != WL_CONNECTED) return;
+  ArduinoOTA.setHostname(OTA_HOSTNAME);
+  ArduinoOTA.setPassword(OTA_PASSWORD);
+  ArduinoOTA.onStart([]() { Serial.println("OTA update starting..."); });
+  ArduinoOTA.onEnd([]() { Serial.println("\nOTA update complete, rebooting."); });
+  ArduinoOTA.onProgress([](unsigned int done, unsigned int total) {
+    static unsigned int lastPct = 101;
+    unsigned int pct = total ? (done * 100U) / total : 0;
+    if (pct != lastPct && pct % 10 == 0) {
+      Serial.printf("OTA %u%%\n", pct);
+      lastPct = pct;
+    }
+  });
+  ArduinoOTA.onError([](ota_error_t error) { Serial.printf("OTA error %u\n", (unsigned)error); });
+  ArduinoOTA.begin();
+  otaStarted = true;
+  Serial.print("OTA ready: ");
+  Serial.print(OTA_HOSTNAME);
+  Serial.print(".local / ");
+  Serial.println(WiFi.localIP());
+#endif
+}
+
+void handleOTA() {
+#ifdef OTA_PASSWORD
+  if (!otaStarted) startOTA(); // WiFi wasn't up at boot
+  if (otaStarted) ArduinoOTA.handle();
+#endif
+}
 
 void connectWiFi() {
   Serial.print("Connecting to WiFi");

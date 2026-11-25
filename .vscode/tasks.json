@@ -33,6 +33,12 @@
       "problemMatcher": []
     },
     {
+      "label": "Firmware: upload over WiFi (OTA)",
+      "type": "shell",
+      "command": "make firmware-upload-ota",
+      "problemMatcher": []
+    },
+    {
       "label": "Firmware: monitor",
       "type": "shell",
       "command": "PORT=${input:serialPort} make firmware-monitor",

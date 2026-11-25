@@ -12,3 +12,9 @@ const char* WIFI_PASSWORD = "your-wifi-password";
 // writes and only post to Google Forms.
 const char* SUPABASE_URL = "https://xxxxxxxxxxxx.supabase.co";
 const char* SUPABASE_ANON_KEY = "your-anon-key";
+
+// Over-the-air updates over your LAN (`make firmware-upload-ota`). Leave this
+// commented out to disable OTA entirely; when set, scripts/firmware.sh reads
+// it from here for uploads. A macro (not a const char*) so the sketch can
+// #ifdef on it. Generate one with: openssl rand -hex 16
+// #define OTA_PASSWORD "choose-a-long-random-password"

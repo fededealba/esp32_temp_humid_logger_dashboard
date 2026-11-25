@@ -2,15 +2,17 @@ FQBN ?= esp32:esp32:esp32
 PORT ?=
 BAUD ?= 115200
 UPLOAD_SPEED ?= 115200
-PARTITION_SCHEME ?= huge_app
+PARTITION_SCHEME ?= min_spiffs
+OTA_HOST ?= esp32-weather.local
 
 export FQBN
 export PORT
 export BAUD
 export UPLOAD_SPEED
 export PARTITION_SCHEME
+export OTA_HOST
 
-.PHONY: firmware-help firmware-install-cli firmware-setup firmware-compile firmware-upload firmware-monitor firmware-ports firmware-boards
+.PHONY: firmware-help firmware-install-cli firmware-setup firmware-compile firmware-upload firmware-upload-ota firmware-monitor firmware-ports firmware-boards
 
 firmware-help:
 	./scripts/firmware.sh help
@@ -26,6 +28,9 @@ firmware-compile:
 
 firmware-upload:
 	./scripts/firmware.sh upload
+
+firmware-upload-ota:
+	./scripts/firmware.sh upload-ota
 
 firmware-monitor:
 	./scripts/firmware.sh monitor

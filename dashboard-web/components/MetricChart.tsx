@@ -21,6 +21,8 @@ export function MetricChart({
   onXRangeChange,
   officialSeries,
   touchZoom = false,
+  zoomEpoch = 0,
+  onUserZoom,
 }: {
   readings: Reading[];
   metric: "temperature" | "humidity";
@@ -35,6 +37,11 @@ export function MetricChart({
   /** Touch screens only: drag selects a time span to zoom to (the page's
    *  "Zoom" button), instead of scrolling the page. */
   touchZoom?: boolean;
+  /** Bumped by the page's "Reset zoom": any change discards the user's zoom
+   *  on both axes (it's part of uirevision). */
+  zoomEpoch?: number;
+  /** Called when the user zooms this chart, on either axis. */
+  onUserZoom?: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const isTemp = metric === "temperature";
@@ -46,7 +53,11 @@ export function MetricChart({
   // so we can break the relayout feedback loop between the two charts.
   const lastAppliedRange = useRef<string | null>(null);
   const onXRangeChangeRef = useRef(onXRangeChange);
-  useEffect(() => { onXRangeChangeRef.current = onXRangeChange; });
+  const onUserZoomRef = useRef(onUserZoom);
+  useEffect(() => {
+    onXRangeChangeRef.current = onXRangeChange;
+    onUserZoomRef.current = onUserZoom;
+  });
 
   const chartReadings = useMemo(
     () =>
@@ -150,7 +161,7 @@ export function MetricChart({
     const layout: Partial<Layout> = {
       autosize: true,
       height: chartHeight,
-      uirevision: `${useFahrenheit ? "f" : "c"}|${timezone}|${viewKey}`,
+      uirevision: `${useFahrenheit ? "f" : "c"}|${timezone}|${viewKey}|${zoomEpoch}`,
       margin: isNarrow
         ? { l: 36, r: 8, t: multiDevice || hasOfficial ? 28 : 8, b: 32 }
         : { l: 56, r: 24, t: multiDevice || hasOfficial ? 32 : 12, b: 44 },
@@ -188,9 +199,6 @@ export function MetricChart({
         zeroline: false,
       },
       yaxis: {
-        // On touch, a drag zooms time only: a finger-drawn box is too
-        // imprecise to also pick a value range.
-        fixedrange: isTouch,
         tickfont: { color: multiDevice ? fontColor : palette[0] },
         range: [yMin, yMax],
         gridcolor: gridColor,
@@ -225,9 +233,16 @@ export function MetricChart({
           ];
           const rangeStr = JSON.stringify(range);
           if (rangeStr !== lastAppliedRange.current) {
+            // A range we didn't just apply from the sibling chart: the user
+            // zoomed this one.
             lastAppliedRange.current = rangeStr;
             onXRangeChangeRef.current?.(range);
+            onUserZoomRef.current?.();
           }
+        } else if (eventData["yaxis.range[0]"] !== undefined) {
+          // Value-only zoom (a mostly vertical drag): per chart, not shared,
+          // since temperature and humidity have different scales.
+          onUserZoomRef.current?.();
         } else if (eventData["xaxis.autorange"] === true) {
           if (lastAppliedRange.current !== null) {
             lastAppliedRange.current = null;
@@ -240,7 +255,7 @@ export function MetricChart({
     return () => {
       cancelled = true;
     };
-  }, [chartReadings, deviceIds, hasEnough, isDark, isTemp, useFahrenheit, timezone, viewKey, officialSeries, isTouch, isNarrow, chartHeight, touchZoom]);
+  }, [chartReadings, deviceIds, hasEnough, isDark, isTemp, useFahrenheit, timezone, viewKey, officialSeries, isTouch, isNarrow, chartHeight, touchZoom, zoomEpoch]);
 
   // Apply an x-axis range received from the sibling chart.
   useEffect(() => {

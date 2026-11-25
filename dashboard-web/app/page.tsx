@@ -98,10 +98,23 @@ export default function Page() {
   // Touch screens: drags scroll the page, so zooming is an explicit mode
   // that ends by itself after one zoom, giving scrolling back.
   const [touchZoom, setTouchZoom] = useState(false);
+  // Whether either chart is zoomed on either axis (time is also mirrored in
+  // sharedXRange; value zoom is per chart), and a counter whose bump makes
+  // both charts drop their zoom.
+  const [zoomed, setZoomed] = useState(false);
+  const [zoomEpoch, setZoomEpoch] = useState(0);
 
   const handleXRangeChange = useCallback((range: [string, string] | null) => {
     setSharedXRange(range);
-    if (range) setTouchZoom(false);
+  }, []);
+  const handleUserZoom = useCallback(() => {
+    setZoomed(true);
+    setTouchZoom(false);
+  }, []);
+  const resetZoom = useCallback(() => {
+    setSharedXRange(null);
+    setZoomed(false);
+    setZoomEpoch((n) => n + 1);
   }, []);
 
   const viewKey = `${rangeHours ?? "all"}|${device}`;
@@ -109,6 +122,7 @@ export default function Page() {
   // Reset the shared zoom whenever the data window or timezone changes.
   useEffect(() => {
     setSharedXRange(null);
+    setZoomed(false);
   }, [viewKey, timezone]);
 
   // Monotonic request ids: only the most recently started request may update
@@ -520,9 +534,9 @@ export default function Page() {
           {touchZoom ? "Cancel zoom" : "🔍 Zoom"}
         </button>
         {touchZoom ? (
-          <span className="zoom-hint">Drag sideways across a chart to pick a time span</span>
-        ) : sharedXRange ? (
-          <button type="button" className="chip" onClick={() => setSharedXRange(null)}>
+          <span className="zoom-hint">Drag a box on a chart (or straight up/down for values only)</span>
+        ) : zoomed || sharedXRange ? (
+          <button type="button" className="chip" onClick={resetZoom}>
             Reset zoom
           </button>
         ) : null}
@@ -549,6 +563,8 @@ export default function Page() {
           onXRangeChange={handleXRangeChange}
           officialSeries={weatherHistory}
           touchZoom={touchZoom}
+          zoomEpoch={zoomEpoch}
+          onUserZoom={handleUserZoom}
         />
       </section>
 
@@ -573,6 +589,8 @@ export default function Page() {
           onXRangeChange={handleXRangeChange}
           officialSeries={weatherHistory}
           touchZoom={touchZoom}
+          zoomEpoch={zoomEpoch}
+          onUserZoom={handleUserZoom}
         />
       </section>
 
